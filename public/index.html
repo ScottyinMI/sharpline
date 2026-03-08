@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SHARPLINE — Stop Gambling. Start Investing.</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23d29922'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' font-family='monospace' font-weight='900' font-size='14' fill='%230d1117'>SL</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d1117; }
+  ::-webkit-scrollbar { height: 3px; width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #21262d; border-radius: 3px; }
+  select option { background: #161b22; color: #e6edf3; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+
+// ─── CONFIG ───
+// API key is secured on server side
+const API_BASE = "/api";
+
+const SPORTS = [
+  { key: "NFL", api: "americanfootball_nfl", label: "NFL", icon: "🏈" },
+  { key: "NCAAF", api: "americanfootball_ncaaf", label: "NCAAF", icon: "🏈" },
+  { key: "NBA", api: "basketball_nba", label: "NBA", icon: "🏀" },
+  { key: "NCAAB", api: "basketball_ncaab", label: "NCAAB", icon: "🏀" },
+  { key: "MLB", api: "baseball_mlb", label: "MLB", icon: "⚾" },
+  { key: "NHL", api: "icehockey_nhl", label: "NHL", icon: "🏒" },
+];
+
+// Map API bookmaker keys to display names
+const BOOK_MAP = {
+  draftkings:"DraftKings",fanduel:"FanDuel",betmgm:"BetMGM",williamhill_us:"Caesars",
+  pointsbetus:"PointsBet",bet365:"Bet365",betrivers:"BetRivers",hardrockbet:"Hard Rock Bet",
+  fanatics:"Fanatics",espnbet:"ESPN BET",betway:"Betway",wynnbet:"WynnBET",
+  superbook:"SuperBook",circasports:"Circa",pinnacle:"Pinnacle",betonlineag:"BetOnline",
+  bovada:"Bovada",heritage:"Heritage",bookmaker:"Bookmaker",fivedimes:"5Dimes",
+  lowvig:"LowVig",betparx:"BetParx",betus:"BetUS",mybookieag:"MyBookie",
+  unibet_us:"Unibet",twinspires:"TwinSpires",foxbet:"FOX Bet",barstool:"Barstool",
+  ballybet:"BallyBet",betfair:"Betfair",williamhill:"William Hill",
+};
+const ALL_BOOKS = ["DraftKings","FanDuel","BetMGM","Caesars","PointsBet","Bet365","BetRivers","Hard Rock Bet","Fanatics","ESPN BET","Betway","WynnBET","SuperBook","Circa","Pinnacle","BetOnline","Bovada","Heritage","Bookmaker","5Dimes"];
+const BOOK_SHORT = {DraftKings:"DK",FanDuel:"FD",BetMGM:"MGM",Caesars:"CZR",PointsBet:"PB",Bet365:"365",BetRivers:"BRiv","Hard Rock Bet":"HRB",Fanatics:"FAN","ESPN BET":"ESPN",Betway:"BW",WynnBET:"WYNN",SuperBook:"SUP",Circa:"CRC",Pinnacle:"PIN",BetOnline:"BOL",Bovada:"BOV",Heritage:"HER",Bookmaker:"BKM","5Dimes":"5D"};
+const short = (b) => BOOK_SHORT[b]||b;
+const DEFAULT_MY_BOOKS = ["DraftKings","FanDuel","BetMGM","Caesars"];
+const SHARP_BOOKS = ["Pinnacle","Circa","Bookmaker"]; // Used for consensus sharp line
+
+// ─── MATH ───
+const a2i = (a) => a < 0 ? Math.abs(a)/(Math.abs(a)+100) : 100/(a+100);
+
+// Edge calculation using implied probability difference
+// For standard -110 markets: small differences = small edges (correct)
+// For plus-money markets: dampened to reflect actual expected value difference
+function calcEdge(yours, sharp) {
+  const yi = a2i(yours), si = a2i(sharp);
+  // Raw edge as percentage of implied probability
+  const rawEdge = ((si - yi) / yi) * 100;
+  // If both are plus-money (implied prob < 50%), dampen the edge
+  // because plus-money odds naturally have wider variance
+  // A +220 vs +179 gap looks huge in % but is modest in real EV
+  if (yi < 0.5 && si < 0.5) {
+    // Use the actual probability point difference as a sanity check
+    const probDiff = (si - yi) * 100; // raw probability points
+    // Cap edge at 2x the probability point difference for plus-money
+    return Math.min(rawEdge, Math.max(probDiff * 2, 0));
+  }
+  return rawEdge;
+}
+
+const calcCLV = (entry, close) => { const e=a2i(entry),c=a2i(close); return ((c-e)/e)*100; };
+const suggestUnits = (e) => e>=8?5:e>=6?4:e>=4?3:e>=3?2:1;
+
+// Median helper for more robust consensus
+function median(arr) {
+  if (arr.length === 0) return 0;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function getDayLabel(date) {
+  const d = new Date(date);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const gameDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.round((gameDay - today) / (1000*60*60*24));
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff < 0) return "Earlier";
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+
+function getDayKey(date) {
+  const d = new Date(date);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+
+// ─── STORAGE ───
+const SK = { bets:"sl-bets-v2", bankroll:"sl-bank-v2", theme:"sl-theme-v2", myBooks:"sl-mybooks-v2" };
+function ld(k,fb){try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb}catch{return fb}}
+function sv(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){console.error(e)}}
+
+// ─── THEMES ───
+const themes = {
+  dark: { bg:"#0d1117",card:"#161b22",cardAlt:"#1c2129",border:"#21262d",borderHi:"#30363d",gold:"#d29922",goldDim:"#9e6a03",goldBg:"rgba(210,153,34,0.08)",green:"#3fb950",greenBg:"rgba(63,185,80,0.1)",red:"#f85149",redBg:"rgba(248,81,73,0.1)",text:"#e6edf3",dim:"#8b949e",muted:"#484f58",toggle:"#8b949e" },
+  light: { bg:"#ffffff",card:"#f6f8fa",cardAlt:"#eef1f5",border:"#d1d9e0",borderHi:"#b0b8c1",gold:"#b8860b",goldDim:"#8b6914",goldBg:"rgba(184,134,11,0.07)",green:"#1a7f37",greenBg:"rgba(26,127,55,0.08)",red:"#cf222e",redBg:"rgba(207,34,46,0.08)",text:"#1f2328",dim:"#59636e",muted:"#8b949e",toggle:"#59636e" },
+};
+const F = { body:"'Inter',-apple-system,sans-serif", mono:"'SF Mono','JetBrains Mono','Cascadia Code',monospace" };
+
+// ─── API FETCH ───
+async function fetchOdds(sportApiKey) {
+  // Fetch spreads and totals in one call using markets parameter
+  const url = `${API_BASE}/odds?sport=${sportApiKey}&markets=spreads,totals`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const remaining = res.headers.get("x-requests-remaining");
+      console.warn(`API error ${res.status} for ${sportApiKey}. Credits remaining: ${remaining}`);
+      return { games: [], remaining: remaining ? parseInt(remaining) : null, error: res.status === 401 ? "Invalid API key" : res.status === 429 ? "Rate limited" : `Error ${res.status}` };
+    }
+    const data = await res.json();
+    const remaining = res.headers.get("x-requests-remaining");
+    const used = res.headers.get("x-requests-used");
+    return { games: data, remaining: remaining ? parseInt(remaining) : null, used: used ? parseInt(used) : null, error: null };
+  } catch (err) {
+    console.error(`Fetch error for ${sportApiKey}:`, err);
+    return { games: [], remaining: null, error: "Network error" };
+  }
+}
+
+function parseApiGames(apiGames, sportKey) {
+  return apiGames.map(g => {
+    const time = new Date(g.commence_time);
+    const dayLabel = getDayLabel(time);
+    const dayKey = getDayKey(time);
+
+    // Extract book lines from API data
+    const bookLines = [];
+    const bookMap = {}; // bookName -> {spread, spreadOdds, total, totalOdds}
+
+    (g.bookmakers || []).forEach(bm => {
+      const bookName = BOOK_MAP[bm.key] || bm.title;
+      if (!bookMap[bookName]) bookMap[bookName] = { book: bookName, spread: null, spreadOdds: null, total: null, totalOdds: null };
+
+      (bm.markets || []).forEach(market => {
+        if (market.key === "spreads") {
+          // Get the home team spread (convention)
+          const homeOutcome = market.outcomes.find(o => o.name === g.home_team);
+          const awayOutcome = market.outcomes.find(o => o.name === g.away_team);
+          if (homeOutcome) {
+            bookMap[bookName].spread = homeOutcome.point;
+            bookMap[bookName].spreadOdds = homeOutcome.price;
+            bookMap[bookName].awaySpread = awayOutcome ? awayOutcome.point : -(homeOutcome.point);
+            bookMap[bookName].awaySpreadOdds = awayOutcome ? awayOutcome.price : null;
+          }
+        }
+        if (market.key === "totals") {
+          const overOutcome = market.outcomes.find(o => o.name === "Over");
+          if (overOutcome) {
+            bookMap[bookName].total = overOutcome.point;
+            bookMap[bookName].totalOdds = overOutcome.price;
+          }
+          const underOutcome = market.outcomes.find(o => o.name === "Under");
+          if (underOutcome) {
+            bookMap[bookName].underOdds = underOutcome.price;
+          }
+        }
+      });
+    });
+
+    Object.values(bookMap).forEach(bl => {
+      if (bl.spreadOdds !== null || bl.totalOdds !== null) bookLines.push(bl);
+    });
+
+    // Calculate sharp consensus line
+    // Require 2+ sharp books for a reliable sharp consensus
+    // Otherwise fall back to full market median (more robust than average)
+    const sharpLines = bookLines.filter(bl => SHARP_BOOKS.includes(bl.book));
+    const useSharp = sharpLines.length >= 2;
+    const consensusLines = useSharp ? sharpLines : bookLines;
+    
+    const spreadOddsArr = consensusLines.filter(bl => bl.spreadOdds).map(bl => bl.spreadOdds);
+    const totalOddsArr = consensusLines.filter(bl => bl.totalOdds).map(bl => bl.totalOdds);
+    const sharpSpreadOdds = spreadOddsArr.length > 0 ? Math.round(median(spreadOddsArr)) : -110;
+    const sharpTotalOdds = totalOddsArr.length > 0 ? Math.round(median(totalOddsArr)) : -110;
+    const consensusSource = useSharp ? "sharp" : "market";
+
+    // Calculate per-book edges vs sharp consensus
+    const edges = bookLines.map(bl => ({
+      book: bl.book,
+      spreadEdge: bl.spreadOdds ? Math.max(0, calcEdge(bl.spreadOdds, sharpSpreadOdds)) : 0,
+      totalEdge: bl.totalOdds ? Math.max(0, calcEdge(bl.totalOdds, sharpTotalOdds)) : 0,
+    }));
+    const maxSpreadEdge = edges.length > 0 ? Math.max(...edges.map(e => e.spreadEdge)) : 0;
+    const maxTotalEdge = edges.length > 0 ? Math.max(...edges.map(e => e.totalEdge)) : 0;
+
+    return {
+      id: g.id,
+      away: g.away_team,
+      home: g.home_team,
+      time,
+      dayKey,
+      dayLabel,
+      bookLines,
+      edges,
+      maxSpreadEdge,
+      maxTotalEdge,
+      sharpSpreadOdds,
+      sharpTotalOdds,
+      consensusSource,
+      live: time <= new Date(),
+    };
+  });
+}
+
+function getBookEdges(game, bf) {
+  if (bf === "ALL") return { spreadEdge: game.maxSpreadEdge, totalEdge: game.maxTotalEdge };
+  const e = game.edges.find(x => x.book === bf);
+  return e || { spreadEdge: 0, totalEdge: 0 };
+}
+
+// ─── COMPONENTS ───
+function EdgeBadge({edge,T}){
+  const s=edge>=5,v=edge>=3;
+  if(s) return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:800,fontFamily:F.mono,background:"rgba(63,185,80,0.25)",color:"#2ee06e",border:"1px solid rgba(63,185,80,0.5)",letterSpacing:0.3}}>▲ {edge.toFixed(1)}%</span>;
+  if(v) return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:800,fontFamily:F.mono,background:"rgba(230,170,20,0.2)",color:"#f0b820",border:"1px solid rgba(230,170,20,0.45)",letterSpacing:0.3}}>● {edge.toFixed(1)}%</span>;
+  return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:600,fontFamily:F.mono,background:T.bg,color:T.muted,border:`1px solid ${T.border}`,letterSpacing:0.3}}>{edge.toFixed(1)}%</span>;
+}
+
+function GameCard({game,bookFilter,onAddBet,bankroll,unitSize,T,myBooks}){
+  const [open,setOpen]=useState(false);
+  const be=getBookEdges(game,bookFilter);
+  const hasStrong=be.spreadEdge>=5||be.totalEdge>=5;
+  const hasValue=be.spreadEdge>=3||be.totalEdge>=3;
+  const visibleBooks = game.bookLines.filter(bl=>myBooks.includes(bl.book));
+  const visibleEdges = game.edges.filter(e=>myBooks.includes(e.book));
+
+  return (
+    <div onClick={()=>setOpen(!open)} style={{background:T.card,border:`1px solid ${hasStrong?`rgba(63,185,80,0.3)`:hasValue?`rgba(230,170,20,0.25)`:T.border}`,borderRadius:6,padding:"12px 14px",cursor:"pointer",marginBottom:4,borderLeft:`4px solid ${hasStrong?"#2ee06e":hasValue?"#f0b820":"transparent"}`,transition:"all 0.15s"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            {game.live&&<span style={{fontSize:8,padding:"1px 5px",borderRadius:3,background:T.redBg,color:T.red,fontFamily:F.mono,fontWeight:700}}>LIVE</span>}
+            <span style={{color:T.text,fontSize:13,fontWeight:600}}>{game.away}</span>
+            <span style={{color:T.muted,fontSize:10,fontFamily:F.mono}}>@</span>
+            <span style={{color:T.text,fontSize:13,fontWeight:600}}>{game.home}</span>
+          </div>
+          <div style={{color:T.muted,fontSize:10,fontFamily:F.mono,marginTop:3}}>
+            {game.dayLabel} · {game.time.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+            {visibleBooks.length>0&&<> · {visibleBooks.length} book{visibleBooks.length!==1?"s":""}</>}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <div style={{textAlign:"center"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:2}}>SPR</div><EdgeBadge edge={be.spreadEdge} T={T}/></div>
+          <div style={{textAlign:"center"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:2}}>TOT</div><EdgeBadge edge={be.totalEdge} T={T}/></div>
+          <span style={{color:T.muted,fontSize:14,transition:"transform 0.15s",transform:open?"rotate(180deg)":"none"}}>▾</span>
+        </div>
+      </div>
+      {open&&(
+        <div style={{marginTop:12,borderTop:`1px solid ${T.border}`,paddingTop:12}}>
+          {/* Sharp consensus info */}
+          <div style={{marginBottom:8,padding:"4px 8px",background:`${T.muted}10`,borderRadius:3,display:"inline-block"}}>
+            <span style={{color:T.muted,fontSize:9,fontFamily:F.mono}}>
+              {game.consensusSource==="sharp"?"Sharp":"Market"} consensus: spread {game.sharpSpreadOdds} · total {game.sharpTotalOdds}
+              {game.consensusSource!=="sharp"&&<span style={{color:T.gold}}> · no sharp books available</span>}
+            </span>
+          </div>
+          {/* Line comparison */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr repeat(4,auto)",gap:"5px 14px",fontSize:10,fontFamily:F.mono}}>
+            <div style={{color:T.muted,fontWeight:600}}>BOOK</div>
+            <div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>LINE</div>
+            <div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>ODDS</div>
+            <div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>O/U</div>
+            <div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>JCE</div>
+            {visibleBooks.map(bl=>{
+              const be2=game.edges.find(e=>e.book===bl.book)||{spreadEdge:0,totalEdge:0};
+              return <React.Fragment key={bl.book}>
+                <div style={{color:T.text,fontWeight:400}}>{short(bl.book)}</div>
+                <div style={{textAlign:"right",color:T.dim}}>{bl.spread!=null?`${bl.spread>0?"+":""}${bl.spread}`:"—"}</div>
+                <div style={{textAlign:"right",color:be2.spreadEdge>=5?"#2ee06e":be2.spreadEdge>=3?"#f0b820":T.dim,fontWeight:be2.spreadEdge>=3?700:400}}>{bl.spreadOdds||"—"}</div>
+                <div style={{textAlign:"right",color:T.dim}}>{bl.total||"—"}</div>
+                <div style={{textAlign:"right",color:be2.totalEdge>=5?"#2ee06e":be2.totalEdge>=3?"#f0b820":T.dim,fontWeight:be2.totalEdge>=3?700:400}}>{bl.totalOdds||"—"}</div>
+              </React.Fragment>;
+            })}
+          </div>
+          {/* Per-book edge breakdown */}
+          {visibleEdges.length>0&&<div style={{marginTop:10,display:"grid",gridTemplateColumns:`repeat(${Math.min(visibleEdges.length,6)},1fr)`,gap:4,overflowX:visibleEdges.length>6?"auto":"visible"}}>
+            {visibleEdges.map(e=>(
+              <div key={e.book} style={{padding:"6px 8px",background:`${T.bg}`,borderRadius:3,border:`1px solid ${T.border}`,textAlign:"center",minWidth:visibleEdges.length>6?60:"auto"}}>
+                <div style={{color:T.muted,fontSize:8,fontFamily:F.mono,marginBottom:2}}>{short(e.book)}</div>
+                <div style={{display:"flex",justifyContent:"center",gap:8}}>
+                  <span style={{fontSize:9,fontFamily:F.mono,color:e.spreadEdge>=5?"#2ee06e":e.spreadEdge>=3?"#f0b820":T.muted,fontWeight:e.spreadEdge>=3?700:400}}>S:{e.spreadEdge.toFixed(1)}%</span>
+                  <span style={{fontSize:9,fontFamily:F.mono,color:e.totalEdge>=5?"#2ee06e":e.totalEdge>=3?"#f0b820":T.muted,fontWeight:e.totalEdge>=3?700:400}}>T:{e.totalEdge.toFixed(1)}%</span>
+                </div>
+              </div>
+            ))}
+          </div>}
+          {/* Track buttons */}
+          <div style={{marginTop:10,display:"flex",gap:4,flexWrap:"wrap"}}>
+            {visibleBooks.map(bl=>{
+              const be2=game.edges.find(e=>e.book===bl.book)||{spreadEdge:0,totalEdge:0};
+              return [
+                be2.spreadEdge>0&&bl.spreadOdds && <button key={`s-${bl.book}`} onClick={e=>{e.stopPropagation();onAddBet({game:`${game.away} @ ${game.home}`,type:"Spread",line:`${bl.spread>0?"+":""}${bl.spread}`,odds:bl.spreadOdds,book:bl.book,edge:be2.spreadEdge,units:suggestUnits(be2.spreadEdge),sport:game.id.split("-")[0]||"NFL"});}}
+                  style={{padding:"4px 10px",borderRadius:3,border:`1px solid ${be2.spreadEdge>=5?"rgba(46,224,110,0.4)":be2.spreadEdge>=3?"rgba(240,184,32,0.4)":T.border}`,background:be2.spreadEdge>=5?"rgba(46,224,110,0.1)":be2.spreadEdge>=3?"rgba(240,184,32,0.08)":"transparent",color:be2.spreadEdge>=5?"#2ee06e":be2.spreadEdge>=3?"#f0b820":T.dim,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>
+                  + {short(bl.book)} Spr {suggestUnits(be2.spreadEdge)}u
+                </button>,
+                be2.totalEdge>0&&bl.totalOdds && <button key={`t-${bl.book}`} onClick={e=>{e.stopPropagation();onAddBet({game:`${game.away} @ ${game.home}`,type:"Total",line:`${bl.total}`,odds:bl.totalOdds,book:bl.book,edge:be2.totalEdge,units:suggestUnits(be2.totalEdge),sport:game.id.split("-")[0]||"NFL"});}}
+                  style={{padding:"4px 10px",borderRadius:3,border:`1px solid ${be2.totalEdge>=5?"rgba(46,224,110,0.4)":be2.totalEdge>=3?"rgba(240,184,32,0.4)":T.border}`,background:be2.totalEdge>=5?"rgba(46,224,110,0.1)":be2.totalEdge>=3?"rgba(240,184,32,0.08)":"transparent",color:be2.totalEdge>=5?"#2ee06e":be2.totalEdge>=3?"#f0b820":T.dim,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>
+                  + {short(bl.book)} Tot {suggestUnits(be2.totalEdge)}u
+                </button>
+              ];
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── EXPOSURE WARNING ───
+function ExposureWarning({bets,bankroll,unitSize,T}){
+  if(bankroll<=0) return null;
+  const pending=bets.filter(b=>!b.result);
+  if(pending.length===0) return null;
+  const totalAction=pending.reduce((s,b)=>s+b.units*unitSize,0);
+  const pct=(totalAction/bankroll*100);
+  const bySport={};
+  pending.forEach(b=>{bySport[b.sport]=(bySport[b.sport]||0)+b.units*unitSize;});
+  const worstSport=Object.entries(bySport).sort((a,b)=>b[1]-a[1])[0];
+  const worstSportPct=worstSport?(worstSport[1]/bankroll*100):0;
+  const todayBets=pending.filter(b=>{const d=new Date(b.timestamp);const t=new Date();return d.toDateString()===t.toDateString();});
+  const todayPct=(todayBets.reduce((s,b)=>s+b.units*unitSize,0)/bankroll*100);
+  const warnings=[];
+  if(pct>=25) warnings.push(`${pct.toFixed(0)}% of bankroll in action (${pending.length} pending · $${totalAction.toLocaleString()})`);
+  if(worstSportPct>=15) warnings.push(`${worstSportPct.toFixed(0)}% exposed to ${worstSport[0]}`);
+  if(todayPct>=15) warnings.push(`${todayPct.toFixed(0)}% of bankroll bet today`);
+  if(warnings.length===0) return null;
+  return (
+    <div style={{marginBottom:10,padding:"8px 12px",background:T.redBg,border:`1px solid ${T.red}22`,borderRadius:4}}>
+      <div style={{color:T.red,fontSize:10,fontWeight:700,fontFamily:F.mono,marginBottom:2}}>⚠ EXPOSURE WARNING</div>
+      {warnings.map((w,i)=><div key={i} style={{color:T.red,fontSize:10,lineHeight:1.6}}>{w}</div>)}
+    </div>
+  );
+}
+
+// ─── BET TRACKER ───
+function BetTracker({bets,setBets,bankroll,unitSize,T}){
+  const [showBreakdown,setShowBreakdown]=useState(false);
+  const stats=useMemo(()=>{
+    const s=bets.filter(b=>b.result),w=s.filter(b=>b.result==="W"),l=s.filter(b=>b.result==="L"),p=s.filter(b=>b.result==="P");
+    const uw=w.reduce((s,b)=>s+b.units*(100/Math.abs(b.odds)),0),ul=l.reduce((s,b)=>s+b.units,0),net=uw-ul;
+    const roi=s.length>0?(net/s.reduce((s,b)=>s+b.units,0))*100:0;
+    const ae=bets.length>0?bets.reduce((s,b)=>s+b.edge,0)/bets.length:0;
+    const wr=s.length>0?(w.length/Math.max(s.length-p.length,1))*100:0;
+    return {wins:w.length,losses:l.length,pushes:p.length,netUnits:net,roi,avgEdge:ae,winRate:wr,pending:bets.length-s.length};
+  },[bets]);
+  const sportBreakdowns=useMemo(()=>{
+    const map={};
+    bets.forEach(b=>{if(!map[b.sport])map[b.sport]={bets:0,settled:0,wins:0,losses:0,pushes:0,unitsWon:0,unitsLost:0,totalUnits:0,edgeSum:0};const m=map[b.sport];m.bets++;m.edgeSum+=b.edge;if(b.result){m.settled++;if(b.result==="W"){m.wins++;m.unitsWon+=b.units*(100/Math.abs(b.odds));}if(b.result==="L"){m.losses++;m.unitsLost+=b.units;}if(b.result==="P")m.pushes++;m.totalUnits+=b.units;}});
+    return Object.entries(map).map(([sport,d])=>({sport,...d,net:d.unitsWon-d.unitsLost,roi:d.settled>0?((d.unitsWon-d.unitsLost)/Math.max(d.totalUnits,1))*100:0,winRate:d.settled>0?(d.wins/Math.max(d.settled-d.pushes,1))*100:0,avgEdge:d.bets>0?d.edgeSum/d.bets:0})).sort((a,b)=>b.net-a.net);
+  },[bets]);
+  const nd=bankroll>0?stats.netUnits*unitSize:0;
+  return (
+    <div>
+      <ExposureWarning bets={bets} bankroll={bankroll} unitSize={unitSize} T={T}/>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:14}}>
+        {[{l:"NET UNITS",v:(stats.netUnits>=0?"+":"")+stats.netUnits.toFixed(2),s:bankroll>0?`${nd>=0?"+":""}$${nd.toFixed(0)}`:null,c:stats.netUnits>=0?T.green:T.red},{l:"ROI",v:`${stats.roi>=0?"+":""}${stats.roi.toFixed(1)}%`,c:stats.roi>=0?T.green:T.red},{l:"WIN RATE",v:`${stats.winRate.toFixed(1)}%`,s:`${stats.wins}W-${stats.losses}L-${stats.pushes}P`,c:T.text},{l:"AVG EDGE",v:`${stats.avgEdge.toFixed(1)}%`,s:`${stats.pending} pending`,c:T.gold}].map(s=>
+          <div key={s.l} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:"10px 12px"}}>
+            <div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:4}}>{s.l}</div>
+            <div style={{color:s.c,fontSize:18,fontWeight:700,fontFamily:F.mono}}>{s.v}</div>
+            {s.s&&<div style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginTop:2}}>{s.s}</div>}
+          </div>)}
+      </div>
+      {bets.length>0&&<><button onClick={()=>setShowBreakdown(!showBreakdown)} style={{width:"100%",padding:"8px",background:T.card,border:`1px solid ${T.border}`,borderRadius:4,color:showBreakdown?T.text:T.dim,fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:F.mono,marginBottom:10,textAlign:"center"}}>{showBreakdown?"▾ HIDE":"▸ SHOW"} SPORT BREAKDOWN</button>
+        {showBreakdown&&<div style={{marginBottom:14}}>
+          <div style={{display:"grid",gridTemplateColumns:"auto repeat(5,1fr)",gap:"4px 12px",fontSize:10,fontFamily:F.mono,padding:"6px 10px",background:T.card,borderRadius:4,border:`1px solid ${T.border}`}}>
+            <div style={{color:T.muted,fontWeight:600}}>SPORT</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>RECORD</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>NET U</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>ROI</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>WIN%</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>AVG EDGE</div>
+            {sportBreakdowns.map(s=><React.Fragment key={s.sport}><div style={{color:T.text,fontWeight:600}}>{s.sport}</div><div style={{textAlign:"right",color:T.dim}}>{s.wins}-{s.losses}-{s.pushes}</div><div style={{textAlign:"right",color:s.net>=0?T.green:T.red}}>{s.net>=0?"+":""}{s.net.toFixed(2)}</div><div style={{textAlign:"right",color:s.roi>=0?T.green:T.red}}>{s.roi>=0?"+":""}{s.roi.toFixed(1)}%</div><div style={{textAlign:"right",color:T.dim}}>{s.winRate.toFixed(1)}%</div><div style={{textAlign:"right",color:T.gold}}>{s.avgEdge.toFixed(1)}%</div></React.Fragment>)}
+          </div>
+        </div>}</>}
+      {bets.length===0?<div style={{textAlign:"center",padding:"40px 20px",color:T.muted}}><div style={{fontSize:24,marginBottom:8,opacity:0.4}}>📋</div><div style={{fontSize:13}}>No bets tracked yet</div></div>:
+        bets.map((bet,i)=>
+          <div key={i} style={{background:T.card,border:`1px solid ${bet.result==="W"?`${T.green}22`:bet.result==="L"?`${T.red}22`:T.border}`,borderRadius:6,padding:"10px 14px",marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{flex:1}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+                <span style={{fontSize:8,padding:"1px 4px",borderRadius:2,background:`${T.muted}15`,color:T.muted,fontFamily:F.mono,fontWeight:600}}>{bet.sport}</span>
+                <span style={{color:T.text,fontSize:12,fontWeight:600}}>{bet.game}</span>
+              </div>
+              <div style={{color:T.dim,fontSize:10,fontFamily:F.mono}}>
+                {bet.type} {bet.line} ({bet.odds}) · {bet.book} · {bet.units}u{bankroll>0&&<> · <span style={{color:T.gold}}>${(bet.units*unitSize).toFixed(0)}</span></>} · edge {bet.edge.toFixed(1)}%
+                {bet.clv!==null&&<> · CLV <span style={{color:bet.clv>=0?T.green:T.red}}>{bet.clv>=0?"+":""}{bet.clv.toFixed(2)}%</span></>}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:3,alignItems:"center"}}>
+              {bet.result?<span style={{padding:"2px 10px",borderRadius:3,fontSize:11,fontWeight:800,fontFamily:F.mono,color:bet.result==="W"?T.green:bet.result==="L"?T.red:T.muted,background:bet.result==="W"?T.greenBg:bet.result==="L"?T.redBg:`${T.muted}15`}}>{bet.result==="W"?"WIN":bet.result==="L"?"LOSS":"PUSH"}</span>:
+                ["W","L","P"].map(r=><button key={r} onClick={()=>{const u=[...bets];u[i]={...u[i],result:r};setBets(u);}} style={{width:26,height:26,borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:r==="W"?T.green:r==="L"?T.red:T.muted,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>{r}</button>)}
+              <button onClick={()=>setBets(bets.filter((_,j)=>j!==i))} style={{width:26,height:26,borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.muted,fontSize:12,cursor:"pointer"}}>×</button>
+            </div>
+          </div>)}
+    </div>
+  );
+}
+
+function ManualBetForm({onAddBet,onClose,T}){
+  const [f,setF]=useState({sport:"NFL",game:"",type:"Spread",line:"",odds:"-110",book:"DraftKings",edge:"",units:"1"});
+  const is={width:"100%",padding:"7px 9px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:4,color:T.text,fontSize:12,fontFamily:F.body,outline:"none",boxSizing:"border-box"};
+  const ls={color:T.muted,fontSize:8,fontWeight:600,fontFamily:F.mono,letterSpacing:0.8,marginBottom:2,display:"block"};
+  return (
+    <div style={{background:T.card,border:`1px solid ${T.borderHi}`,borderRadius:6,padding:14,marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><span style={{color:T.text,fontSize:13,fontWeight:700}}>Log a Bet</span><button onClick={onClose} style={{background:"none",border:"none",color:T.muted,fontSize:15,cursor:"pointer"}}>×</button></div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+        <div><label style={ls}>SPORT</label><select value={f.sport} onChange={e=>setF({...f,sport:e.target.value})} style={{...is,appearance:"auto"}}>{SPORTS.map(s=><option key={s.key} value={s.key}>{s.icon} {s.label}</option>)}</select></div>
+        <div><label style={ls}>TYPE</label><select value={f.type} onChange={e=>setF({...f,type:e.target.value})} style={{...is,appearance:"auto"}}>{["Spread","Total"].map(t=><option key={t}>{t}</option>)}</select></div>
+        <div style={{gridColumn:"1/-1"}}><label style={ls}>GAME</label><input placeholder="Chiefs @ Ravens" value={f.game} onChange={e=>setF({...f,game:e.target.value})} style={is}/></div>
+        <div><label style={ls}>LINE</label><input placeholder="-3.5" value={f.line} onChange={e=>setF({...f,line:e.target.value})} style={is}/></div>
+        <div><label style={ls}>ODDS</label><input placeholder="-110" value={f.odds} onChange={e=>setF({...f,odds:e.target.value})} style={is}/></div>
+        <div><label style={ls}>BOOK</label><select value={f.book} onChange={e=>setF({...f,book:e.target.value})} style={{...is,appearance:"auto"}}>{ALL_BOOKS.map(b=><option key={b} value={b}>{b}</option>)}</select></div>
+        <div><label style={ls}>EDGE %</label><input placeholder="3.5" value={f.edge} onChange={e=>setF({...f,edge:e.target.value})} style={is}/></div>
+        <div><label style={ls}>UNITS</label><input placeholder="1" value={f.units} onChange={e=>setF({...f,units:e.target.value})} style={is}/></div>
+      </div>
+      <button onClick={()=>{if(f.game&&f.line){onAddBet({sport:f.sport,game:f.game,type:f.type,line:f.line,odds:parseInt(f.odds)||-110,book:f.book,edge:parseFloat(f.edge)||0,units:parseFloat(f.units)||1});onClose();}}}
+        style={{width:"100%",marginTop:10,padding:9,background:T.green,color:T.bg,border:"none",borderRadius:4,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>LOG BET</button>
+    </div>
+  );
+}
+
+function BankrollPanel({bankroll,setBankroll,unitSize,T}){
+  const [editing,setEditing]=useState(false),[input,setInput]=useState(bankroll.toString());
+  return (
+    <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:"12px 14px",marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:3}}>BANKROLL</div>
+          {editing?<div style={{display:"flex",gap:4,alignItems:"center"}}><span style={{color:T.dim,fontSize:16,fontFamily:F.mono}}>$</span><input autoFocus value={input} onChange={e=>setInput(e.target.value.replace(/[^0-9]/g,""))} onKeyDown={e=>{if(e.key==="Enter"){setBankroll(parseInt(input)||0);setEditing(false);}}} style={{width:120,padding:"5px 7px",background:T.bg,border:`1px solid ${T.green}`,borderRadius:3,color:T.text,fontSize:18,fontWeight:700,fontFamily:F.mono,outline:"none"}}/><button onClick={()=>{setBankroll(parseInt(input)||0);setEditing(false);}} style={{padding:"5px 10px",background:T.green,color:T.bg,border:"none",borderRadius:3,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>SET</button></div>:
+          <div onClick={()=>{setInput(bankroll.toString());setEditing(true);}} style={{cursor:"pointer",display:"flex",alignItems:"baseline",gap:6}}><span style={{color:T.text,fontSize:22,fontWeight:700,fontFamily:F.mono}}>${bankroll>0?bankroll.toLocaleString():"—"}</span><span style={{color:T.muted,fontSize:10,fontFamily:F.mono}}>{bankroll>0?"edit":"set amount"}</span></div>}
+        </div>
+        {bankroll>0&&<div style={{textAlign:"right"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:3}}>1 UNIT = 1%</div><div style={{color:T.gold,fontSize:20,fontWeight:700,fontFamily:F.mono}}>${unitSize.toLocaleString()}</div><div style={{display:"flex",gap:3,marginTop:4}}>{[1,2,3,4,5].map(u=><div key={u} style={{textAlign:"center",padding:"2px 6px",background:`${T.muted}10`,borderRadius:2,border:`1px solid ${T.border}`}}><div style={{color:T.muted,fontSize:7,fontFamily:F.mono}}>{u}u</div><div style={{color:T.dim,fontSize:9,fontFamily:F.mono,fontWeight:600}}>${(u*unitSize).toLocaleString()}</div></div>)}</div></div>}
+      </div>
+    </div>
+  );
+}
+
+function CLVTab({bets,T}){
+  const clvStats=useMemo(()=>{const wc=bets.filter(b=>b.clv!==null);if(wc.length===0)return{avg:0,beatPct:0,total:0,positive:0};const pos=wc.filter(b=>b.clv>0);return{avg:wc.reduce((s,b)=>s+b.clv,0)/wc.length,beatPct:(pos.length/wc.length)*100,total:wc.length,positive:pos.length};},[bets]);
+  const pending=bets.filter(b=>b.clv===null).length;
+  return (
+    <div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:14}}>
+        {[{l:"AVG CLV",v:clvStats.total>0?`${clvStats.avg>=0?"+":""}${clvStats.avg.toFixed(2)}%`:"—",c:clvStats.total>0?(clvStats.avg>=0?T.green:T.red):T.muted,s:`${clvStats.total} tracked`},{l:"BEAT THE CLOSE",v:clvStats.total>0?`${clvStats.beatPct.toFixed(1)}%`:"—",c:clvStats.total>0?(clvStats.beatPct>=55?T.green:T.gold):T.muted},{l:"AWAITING CLOSE",v:`${pending}`,c:T.gold,s:"auto-fills with API"}].map(s=>
+          <div key={s.l} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:"10px 12px"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:4}}>{s.l}</div><div style={{color:s.c,fontSize:20,fontWeight:700,fontFamily:F.mono}}>{s.v}</div>{s.s&&<div style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginTop:2}}>{s.s}</div>}</div>)}
+      </div>
+      <div style={{padding:"10px 12px",background:T.goldBg,borderRadius:4,borderLeft:`2px solid ${T.gold}`,marginBottom:14}}>
+        <div style={{color:T.gold,fontSize:10,fontWeight:700,fontFamily:F.mono,marginBottom:3}}>CLV: THE METRIC THAT MATTERS</div>
+        <div style={{color:T.dim,fontSize:10,lineHeight:1.7}}>Closing Line Value measures whether you bought at a better price than the final market. Consistently positive CLV = long-term profitability, regardless of short-term variance. Closing lines will auto-populate as games kick off.</div>
+      </div>
+      {bets.filter(b=>b.clv!==null).map((b,i)=>(<div key={i} style={{background:T.card,border:`1px solid ${b.clv>=0?`${T.green}15`:`${T.red}15`}`,borderRadius:4,padding:"8px 12px",marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{color:T.text,fontSize:11,fontWeight:600}}>{b.game}</div><div style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>{b.type} {b.line} · Entry: {b.entryOdds} → Close: {b.closingOdds}</div></div><div style={{color:b.clv>=0?T.green:T.red,fontSize:13,fontWeight:800,fontFamily:F.mono}}>{b.clv>=0?"+":""}{b.clv.toFixed(2)}%</div></div>))}
+      {bets.length===0&&<div style={{textAlign:"center",padding:"40px 20px",color:T.muted}}><div style={{fontSize:24,marginBottom:8,opacity:0.4}}>📈</div><div style={{fontSize:13}}>Track bets first, then CLV populates automatically</div></div>}
+    </div>
+  );
+}
+
+function AlertBanner({alerts,T}){
+  const [dismissed,setDismissed]=useState(false);
+  if(dismissed||alerts.length===0) return null;
+  const top=alerts[0];
+  return (
+    <div style={{padding:"8px 14px",background:T.greenBg,borderBottom:`1px solid ${T.green}22`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <span style={{color:T.green,fontSize:10,fontWeight:700,fontFamily:F.mono}}>▲ EDGE DETECTED</span>
+        <span style={{color:T.text,fontSize:11}}>{top.away} @ {top.home}</span>
+        <span style={{color:T.dim,fontSize:10,fontFamily:F.mono}}>{top.type} · {top.edge.toFixed(1)}% at {top.book}</span>
+        {alerts.length>1&&<span style={{color:T.muted,fontSize:10,fontFamily:F.mono}}>+{alerts.length-1} more</span>}
+      </div>
+      <button onClick={()=>setDismissed(true)} style={{background:"none",border:"none",color:T.muted,fontSize:14,cursor:"pointer",flexShrink:0}}>×</button>
+    </div>
+  );
+}
+
+// ─── MAIN APP ───
+function SharpLine(){
+  const [activeSport,setActiveSport]=useState("NBA");
+  const [activeTab,setActiveTab]=useState("scanner");
+  const [bets,setBets]=useState([]);
+  const [games,setGames]=useState({});
+  const [showManualBet,setShowManualBet]=useState(false);
+  const [bookFilter,setBookFilter]=useState("ALL");
+  const [bankroll,setBankroll]=useState(0);
+  const [loaded,setLoaded]=useState(false);
+  const [dark,setDark]=useState(true);
+  const [myBooks,setMyBooks]=useState(DEFAULT_MY_BOOKS);
+  const [showBookSettings,setShowBookSettings]=useState(false);
+  const [loading,setLoading]=useState({});
+  const [apiCredits,setApiCredits]=useState(null);
+  const [errors,setErrors]=useState({});
+  const [lastFetch,setLastFetch]=useState({});
+
+  const T=dark?themes.dark:themes.light;
+  const unitSize=Math.round(bankroll*0.01);
+
+  // Load persisted data
+  useEffect(()=>{const sb=ld(SK.bets,[]),sba=ld(SK.bankroll,0),st=ld(SK.theme,true),smb=ld(SK.myBooks,DEFAULT_MY_BOOKS);setBets(sb);setBankroll(sba);setDark(st);setMyBooks(smb);setLoaded(true);},[]);
+  useEffect(()=>{if(loaded)sv(SK.bets,bets);},[bets,loaded]);
+  useEffect(()=>{if(loaded)sv(SK.bankroll,bankroll);},[bankroll,loaded]);
+  useEffect(()=>{if(loaded)sv(SK.theme,dark);},[dark,loaded]);
+  useEffect(()=>{if(loaded)sv(SK.myBooks,myBooks);},[myBooks,loaded]);
+
+  // Fetch live odds for a sport
+  const fetchSport = useCallback(async (sportKey) => {
+    const sport = SPORTS.find(s => s.key === sportKey);
+    if (!sport) return;
+    setLoading(prev => ({ ...prev, [sportKey]: true }));
+    setErrors(prev => ({ ...prev, [sportKey]: null }));
+    const result = await fetchOdds(sport.api);
+    if (result.remaining !== null) setApiCredits(result.remaining);
+    if (result.error) {
+      setErrors(prev => ({ ...prev, [sportKey]: result.error }));
+      setLoading(prev => ({ ...prev, [sportKey]: false }));
+      return;
+    }
+    const parsed = parseApiGames(result.games, sportKey);
+    setGames(prev => ({ ...prev, [sportKey]: parsed }));
+    setLastFetch(prev => ({ ...prev, [sportKey]: new Date() }));
+    setLoading(prev => ({ ...prev, [sportKey]: false }));
+  }, []);
+
+  // Auto-fetch when switching sports (with 5min cache)
+  useEffect(() => {
+    const last = lastFetch[activeSport];
+    const stale = !last || (new Date() - last) > 5 * 60 * 1000;
+    if (stale && !loading[activeSport]) {
+      fetchSport(activeSport);
+    }
+  }, [activeSport, fetchSport]);
+
+  const currentGames = useMemo(() => {
+    const all = games[activeSport] || [];
+    return all.sort((a, b) => a.time - b.time);
+  }, [games, activeSport]);
+
+  // Group by day for display
+  const dayGroups = useMemo(() => {
+    const groups = {};
+    currentGames.forEach(g => {
+      if (!groups[g.dayKey]) groups[g.dayKey] = { label: g.dayLabel, games: [] };
+      groups[g.dayKey].games.push(g);
+    });
+    return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [currentGames]);
+
+  // Alerts across all loaded sports
+  const alerts = useMemo(() => {
+    const all = [];
+    Object.entries(games).forEach(([sk, gs]) => {
+      gs.forEach(g => {
+        g.edges.filter(e => myBooks.includes(e.book)).forEach(e => {
+          if (e.spreadEdge >= 5) all.push({ away: g.away, home: g.home, type: "Spread", edge: e.spreadEdge, book: e.book, sport: sk });
+          if (e.totalEdge >= 5) all.push({ away: g.away, home: g.home, type: "Total", edge: e.totalEdge, book: e.book, sport: sk });
+        });
+      });
+    });
+    return all.sort((a, b) => b.edge - a.edge).slice(0, 20);
+  }, [games, myBooks]);
+
+  const addBet = bet => { setBets(prev => [...prev, { ...bet, timestamp: new Date().toISOString(), entryOdds: bet.odds, closingOdds: null, clv: null }]); setActiveTab("tracker"); };
+
+  return (
+    <div style={{minHeight:"100vh",background:T.bg,color:T.text,fontFamily:F.body,transition:"background 0.2s, color 0.2s"}}>
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+      <style>{`*{box-sizing:border-box;margin:0;padding:0} select option{background:${T.card};color:${T.text}} ::-webkit-scrollbar{height:3px} ::-webkit-scrollbar-thumb{background:${T.border};border-radius:2px}`}</style>
+
+      <AlertBanner alerts={alerts} T={T}/>
+
+      {/* Header */}
+      <div style={{borderBottom:`1px solid ${T.border}`,padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",background:T.card}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:28,height:28,borderRadius:4,background:`linear-gradient(135deg,${T.gold},${T.goldDim})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:900,color:dark?"#0d1117":"#fff",fontFamily:F.mono,letterSpacing:-1}}>SL</div>
+          <div>
+            <div style={{fontSize:14,fontWeight:800,letterSpacing:"-0.3px"}}>SHARPLINE</div>
+            <div style={{fontSize:8,fontFamily:F.mono,color:T.muted,letterSpacing:2}}>STOP GAMBLING. START INVESTING.</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          {apiCredits!==null&&<span style={{fontSize:9,fontFamily:F.mono,color:apiCredits<50?T.red:apiCredits<200?T.gold:T.muted,padding:"4px 8px",borderRadius:3,border:`1px solid ${T.border}`,background:T.card}}>{apiCredits} credits</span>}
+          <button onClick={()=>setShowBookSettings(!showBookSettings)} style={{background:showBookSettings?T.goldBg:"transparent",border:`1px solid ${showBookSettings?`${T.gold}40`:T.border}`,color:showBookSettings?T.gold:T.toggle,padding:"6px 10px",borderRadius:4,fontSize:12,cursor:"pointer"}}>⚙️</button>
+          <button onClick={()=>setDark(!dark)} style={{background:"transparent",border:`1px solid ${T.border}`,color:T.toggle,padding:"6px 10px",borderRadius:4,fontSize:12,cursor:"pointer"}}>{dark?"☀️":"🌙"}</button>
+        </div>
+      </div>
+
+      {/* Book Settings */}
+      {showBookSettings&&<div style={{borderBottom:`1px solid ${T.border}`,padding:"12px 18px",background:T.card}}>
+        <div style={{maxWidth:900,margin:"0 auto"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <div style={{color:T.text,fontSize:12,fontWeight:700}}>My Sportsbooks ({myBooks.length})</div>
+            <div style={{display:"flex",gap:4}}><button onClick={()=>setMyBooks([...ALL_BOOKS])} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.dim,fontSize:9,fontFamily:F.mono,cursor:"pointer"}}>All</button><button onClick={()=>setMyBooks(DEFAULT_MY_BOOKS)} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.dim,fontSize:9,fontFamily:F.mono,cursor:"pointer"}}>Reset</button></div>
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+            {ALL_BOOKS.map(b=>{const active=myBooks.includes(b);return <button key={b} onClick={()=>{if(active&&myBooks.length>1)setMyBooks(myBooks.filter(x=>x!==b));else if(!active)setMyBooks([...myBooks,b]);}} style={{padding:"5px 10px",borderRadius:4,border:`1px solid ${active?`${T.green}40`:T.border}`,background:active?T.greenBg:"transparent",color:active?T.green:T.muted,fontSize:10,fontWeight:600,cursor:"pointer",transition:"all 0.15s"}}>{active&&"✓ "}{b}</button>;})}
+          </div>
+        </div>
+      </div>}
+
+      <div style={{maxWidth:900,margin:"0 auto",padding:"14px 14px"}}>
+        {/* Tabs */}
+        <div style={{display:"flex",marginBottom:12,background:T.card,borderRadius:4,padding:2,border:`1px solid ${T.border}`}}>
+          {[{k:"scanner",l:"Scanner"},{k:"tracker",l:`Tracker (${bets.length})`},{k:"clv",l:"CLV"},{k:"bankroll",l:"Bankroll"}].map(t=>
+            <button key={t.k} onClick={()=>setActiveTab(t.k)} style={{flex:1,padding:"8px 12px",borderRadius:3,border:"none",background:activeTab===t.k?`${T.text}10`:"transparent",color:activeTab===t.k?T.text:T.muted,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:F.body}}>{t.l}</button>)}
+        </div>
+
+        {/* SCANNER */}
+        {activeTab==="scanner"&&<>
+          {/* Sport selector */}
+          <div style={{display:"flex",gap:3,marginBottom:8,overflowX:"auto",paddingBottom:2}}>
+            {SPORTS.map(s=><button key={s.key} onClick={()=>setActiveSport(s.key)} style={{padding:"5px 12px",borderRadius:3,border:`1px solid ${activeSport===s.key?T.borderHi:T.border}`,background:activeSport===s.key?`${T.text}08`:"transparent",color:activeSport===s.key?T.text:T.muted,fontSize:11,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap",position:"relative"}}>
+              {s.icon} {s.label}
+              {loading[s.key]&&<span style={{position:"absolute",top:-2,right:-2,width:6,height:6,borderRadius:"50%",background:T.gold,animation:"pulse 1s infinite"}}/>}
+            </button>)}
+          </div>
+
+          {/* Filter row */}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:4}}>
+            <div style={{display:"flex",gap:3,alignItems:"center"}}>
+              <select value={bookFilter} onChange={e=>setBookFilter(e.target.value)} style={{padding:"3px 20px 3px 7px",borderRadius:3,border:`1px solid ${bookFilter!=="ALL"?`${T.gold}40`:T.border}`,background:bookFilter!=="ALL"?T.goldBg:"transparent",color:bookFilter!=="ALL"?T.gold:T.muted,fontSize:10,fontWeight:600,fontFamily:F.mono,appearance:"none",cursor:"pointer",backgroundImage:`url("data:image/svg+xml,%3Csvg width='8' height='5' viewBox='0 0 8 5' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L4 4L7 1' stroke='%23${dark?"484f58":"8b949e"}' stroke-width='1.5'/%3E%3C/svg%3E")`,backgroundRepeat:"no-repeat",backgroundPosition:"right 5px center"}}>
+                <option value="ALL">All My Books ({myBooks.length})</option>{myBooks.map(b=><option key={b} value={b}>{b}</option>)}
+              </select>
+              <button onClick={()=>fetchSport(activeSport)} disabled={loading[activeSport]} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:loading[activeSport]?T.muted:T.dim,fontSize:9,fontWeight:600,cursor:loading[activeSport]?"wait":"pointer",fontFamily:F.mono}}>
+                {loading[activeSport]?"Loading...":"↻ Refresh"}
+              </button>
+            </div>
+            <span style={{color:T.muted,fontSize:9,fontFamily:F.mono}}>
+              {currentGames.length} games · LIVE DATA
+              {lastFetch[activeSport]&&<> · updated {new Date(lastFetch[activeSport]).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</>}
+            </span>
+          </div>
+
+          {/* Error state */}
+          {errors[activeSport]&&<div style={{marginBottom:8,padding:"8px 12px",background:T.redBg,border:`1px solid ${T.red}22`,borderRadius:4}}>
+            <span style={{color:T.red,fontSize:10,fontFamily:F.mono}}>⚠ {errors[activeSport]} — check API key or try again</span>
+          </div>}
+
+          {/* Loading state */}
+          {loading[activeSport]&&currentGames.length===0&&<div style={{textAlign:"center",padding:40,color:T.muted}}>
+            <div style={{fontSize:20,marginBottom:8}}>⏳</div>
+            <div style={{fontSize:12}}>Fetching live odds for {SPORTS.find(s=>s.key===activeSport)?.label}...</div>
+          </div>}
+
+          {/* Games grouped by day */}
+          {dayGroups.map(([dayKey, group]) => (
+            <div key={dayKey}>
+              <div style={{padding:"6px 0",marginTop:8,marginBottom:4,borderBottom:`1px solid ${T.border}`}}>
+                <span style={{color:T.dim,fontSize:10,fontWeight:700,fontFamily:F.mono,letterSpacing:1}}>{group.label.toUpperCase()}</span>
+                <span style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginLeft:8}}>{group.games.length} games</span>
+              </div>
+              {group.games.map(g => <GameCard key={g.id} game={g} bookFilter={bookFilter} onAddBet={addBet} bankroll={bankroll} unitSize={unitSize} T={T} myBooks={myBooks}/>)}
+            </div>
+          ))}
+
+          {!loading[activeSport]&&currentGames.length===0&&!errors[activeSport]&&<div style={{textAlign:"center",padding:36,color:T.muted}}>
+            <div style={{fontSize:20,marginBottom:6,opacity:0.4}}>🔍</div>
+            <div style={{fontSize:12}}>No upcoming games for {SPORTS.find(s=>s.key===activeSport)?.label}. Check back later or try another sport.</div>
+          </div>}
+        </>}
+
+        {/* TRACKER */}
+        {activeTab==="tracker"&&<>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <span style={{fontSize:13,fontWeight:700}}>Betting Ledger</span>
+            <button onClick={()=>setShowManualBet(!showManualBet)} style={{background:T.green,color:dark?T.bg:"#fff",border:"none",padding:"6px 12px",borderRadius:3,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>+ LOG BET</button>
+          </div>
+          {showManualBet&&<ManualBetForm onAddBet={addBet} onClose={()=>setShowManualBet(false)} T={T}/>}
+          <BetTracker bets={bets} setBets={setBets} bankroll={bankroll} unitSize={unitSize} T={T}/>
+        </>}
+
+        {/* CLV */}
+        {activeTab==="clv"&&<><div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Closing Line Value</div><CLVTab bets={bets} T={T}/></>}
+
+        {/* BANKROLL */}
+        {activeTab==="bankroll"&&<>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Bankroll Management</div>
+          <BankrollPanel bankroll={bankroll} setBankroll={setBankroll} unitSize={unitSize} T={T}/>
+          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:14}}>
+            <div style={{color:T.gold,fontSize:11,fontWeight:700,marginBottom:8}}>Unit Sizing</div>
+            <div style={{color:T.dim,fontSize:11,lineHeight:1.7,marginBottom:10}}>1 unit = 1% of bankroll. Size scales with edge. Max 5 units (5%).</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:6}}>
+              {[{r:"3-4% edge",u:"2 units",a:bankroll>0?`$${(2*unitSize).toLocaleString()}`:"—"},{r:"4-6% edge",u:"3 units",a:bankroll>0?`$${(3*unitSize).toLocaleString()}`:"—"},{r:"6-8% edge",u:"4 units",a:bankroll>0?`$${(4*unitSize).toLocaleString()}`:"—"},{r:"8%+ edge",u:"5 units MAX",a:bankroll>0?`$${(5*unitSize).toLocaleString()}`:"—"}].map(r=>
+                <div key={r.r} style={{padding:"8px 10px",background:`${T.muted}08`,borderRadius:3,border:`1px solid ${T.border}`}}>
+                  <div style={{color:T.green,fontSize:10,fontWeight:700,fontFamily:F.mono}}>{r.r}</div>
+                  <div style={{color:T.text,fontSize:12,fontWeight:600,fontFamily:F.mono,marginTop:3}}>{r.u}</div>
+                  <div style={{color:T.gold,fontSize:11,fontFamily:F.mono,marginTop:1}}>{r.a}</div>
+                </div>)}
+            </div>
+          </div>
+        </>}
+
+        <div style={{marginTop:24,paddingTop:12,borderTop:`1px solid ${T.border}`,textAlign:"center",color:T.muted,fontSize:9,fontFamily:F.mono,lineHeight:1.8}}>
+          LIVE ODDS · {myBooks.length} SPORTSBOOKS · sharpline.com
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById('root')).render(<SharpLine />);
+</script>
+</body>
+</html>
