@@ -9,6 +9,7 @@
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0d1117; }
@@ -29,6 +30,64 @@ const { useState, useEffect, useMemo, useCallback, useRef } = React;
 // To RECONNECT the API: change API_DISCONNECTED to false
 const API_DISCONNECTED = true;
 const API_BASE = "/api";
+
+// ─── SUPABASE ───
+const SUPABASE_URL = "https://vfnnmfxvuuqpfrkvwftu.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_69angIXacvKS7CtGK27v6w_NM2w6okB";
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Stable device ID — same user_id across all your browsers/devices
+// To share bets across devices: use the same browser profile, or we can add a login later
+const USER_ID = (() => {
+  let id = localStorage.getItem("sl-user-id");
+  if (!id) { id = "sl-" + Math.random().toString(36).slice(2, 11); localStorage.setItem("sl-user-id", id); }
+  return id;
+})();
+
+// ─── DB OPERATIONS ───
+async function dbLoad() {
+  try {
+    const { data, error } = await sb.from("bets").select("*").eq("user_id", USER_ID).order("timestamp", { ascending: false });
+    if (error) throw error;
+    return (data || []).map(r => ({
+      id: r.id, sport: r.sport, game: r.game, type: r.type, line: r.line,
+      odds: r.odds, book: r.book, edge: r.edge, units: r.units, result: r.result,
+      entryOdds: r.entry_odds, closingOdds: r.closing_odds, clv: r.clv, timestamp: r.timestamp,
+    }));
+  } catch(e) { console.error("dbLoad:", e); return []; }
+}
+
+async function dbAdd(bet) {
+  try {
+    const { data, error } = await sb.from("bets").insert([{
+      user_id: USER_ID, sport: bet.sport, game: bet.game, type: bet.type,
+      line: bet.line, odds: bet.odds, book: bet.book, edge: bet.edge, units: bet.units,
+      result: bet.result || null, entry_odds: bet.entryOdds || bet.odds,
+      closing_odds: bet.closingOdds || null, clv: bet.clv || null,
+      timestamp: bet.timestamp || new Date().toISOString(),
+    }]).select().single();
+    if (error) throw error;
+    return data.id;
+  } catch(e) { console.error("dbAdd:", e); return null; }
+}
+
+async function dbUpdate(id, fields) {
+  try {
+    const mapped = {};
+    if (fields.result !== undefined) mapped.result = fields.result;
+    if (fields.closingOdds !== undefined) mapped.closing_odds = fields.closingOdds;
+    if (fields.clv !== undefined) mapped.clv = fields.clv;
+    const { error } = await sb.from("bets").update(mapped).eq("id", id).eq("user_id", USER_ID);
+    if (error) throw error;
+  } catch(e) { console.error("dbUpdate:", e); }
+}
+
+async function dbDelete(id) {
+  try {
+    const { error } = await sb.from("bets").delete().eq("id", id).eq("user_id", USER_ID);
+    if (error) throw error;
+  } catch(e) { console.error("dbDelete:", e); }
+}
 
 const SPORTS = [
   { key: "NFL",   api: "americanfootball_nfl",   label: "NFL",   icon: "🏈" },
@@ -58,20 +117,14 @@ const SHARP_BOOKS = ["Pinnacle","Circa","Bookmaker"];
 // ─── MATH ───
 const a2i = (a) => a < 0 ? Math.abs(a)/(Math.abs(a)+100) : 100/(a+100);
 
-// Edge: pure implied probability point difference, hard-capped at 10%
 function calcEdge(yours, sharp) {
   const yi = a2i(yours), si = a2i(sharp);
-  const edge = (si - yi) * 100;
-  return Math.min(Math.max(0, edge), 10);
+  return Math.min(Math.max(0, (si - yi) * 100), 10);
 }
 
-// CLV: percentage improvement vs closing line
-// Positive = you got a better number than the market closed at (sharp behavior)
 function calcCLV(entryOdds, closingOdds) {
   if (!entryOdds || !closingOdds) return null;
   const ei = a2i(entryOdds), ci = a2i(closingOdds);
-  // Positive CLV = closing implied is HIGHER than entry implied
-  // i.e. the line moved against bettors after you got it
   return (ci - ei) * 100;
 }
 
@@ -81,19 +134,18 @@ function median(arr) {
   if (arr.length === 0) return 0;
   const sorted = [...arr].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid-1] + sorted[mid]) / 2;
 }
 
 function getDayLabel(date) {
-  const d = new Date(date);
-  const now = new Date();
+  const d = new Date(date), now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const gameDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const diff = Math.round((gameDay - today) / (1000*60*60*24));
   if (diff === 0) return "Today";
   if (diff === 1) return "Tomorrow";
   if (diff < 0) return "Earlier";
-  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  return d.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" });
 }
 
 function getDayKey(date) {
@@ -101,311 +153,210 @@ function getDayKey(date) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
 
-// ─── BET RECOMMENDATION ENGINE ───
-// Based on sharp betting principles:
-// 1. Half-point value (6 vs 6.5 on a hockey total is massive)
-// 2. Juice comparison (paying -135 vs +110 is real money over volume)
-// 3. Sharp book consensus (Pinnacle/Circa/Bookmaker as truth)
-// 4. Line movement (did the line move toward your bet? Sharp signal)
+// ─── RECOMMENDATION ENGINE ───
 function generateRecommendation(game, myBooks, lineHistory) {
   const recs = [];
-
   game.bookLines.filter(bl => myBooks.includes(bl.book)).forEach(bl => {
-    const edge = game.edges.find(e => e.book === bl.book) || { spreadEdge: 0, totalEdge: 0 };
+    const edge = game.edges.find(e => e.book === bl.book) || { spreadEdge:0, totalEdge:0 };
 
-    // --- TOTAL RECOMMENDATION ---
+    // TOTAL
     if (bl.total && bl.totalOdds) {
-      let score = 0;
-      let reasons = [];
-      let signals = [];
-
-      // Factor 1: Edge vs sharp consensus
+      let score = 0, reasons = [], signals = [];
       if (edge.totalEdge >= 5) { score += 40; reasons.push(`${edge.totalEdge.toFixed(1)}% edge vs sharp consensus`); }
       else if (edge.totalEdge >= 3) { score += 20; reasons.push(`${edge.totalEdge.toFixed(1)}% edge vs consensus`); }
-
-      // Factor 2: Juice value — getting plus money or near-even is a gift
-      if (bl.totalOdds > 0) { score += 25; signals.push(`plus money (${bl.totalOdds > 0 ? '+':''}${bl.totalOdds})`); }
+      if (bl.totalOdds > 0) { score += 25; signals.push(`plus money (${bl.totalOdds > 0?"+":""}${bl.totalOdds})`); }
       else if (bl.totalOdds >= -108) { score += 15; signals.push(`reduced juice (${bl.totalOdds})`); }
       else if (bl.totalOdds <= -130) { score -= 10; signals.push(`heavy juice (${bl.totalOdds})`); }
-
-      // Factor 3: Half-point shopping — compare totals across books
       const otherTotals = game.bookLines.filter(x => x.book !== bl.book && x.total).map(x => x.total);
       if (otherTotals.length > 0) {
-        const marketTotal = median(otherTotals);
-        const halfPointEdge = bl.total - marketTotal;
-        if (halfPointEdge <= -0.4) { score += 20; signals.push(`best total in market (${bl.total} vs mkt ${marketTotal})`); }
-        else if (halfPointEdge >= 0.4) { score -= 10; }
+        const mkt = median(otherTotals);
+        if (bl.total - mkt <= -0.4) { score += 20; signals.push(`best total in market (${bl.total} vs mkt ${mkt})`); }
+        else if (bl.total - mkt >= 0.4) score -= 10;
       }
-
-      // Factor 4: Line movement — compare to first-seen line
       const hist = lineHistory[game.id];
-      if (hist) {
-        const firstTotal = hist[bl.book]?.total;
-        if (firstTotal && bl.total !== firstTotal) {
-          const moved = bl.total - firstTotal;
-          // For over: line moving up = sharp overs. For under: line moving down = sharp unders.
-          if (moved > 0) signals.push(`line moved ↑ ${firstTotal}→${bl.total}`);
-          else signals.push(`line moved ↓ ${firstTotal}→${bl.total}`);
-          score += 10; // any movement = market info
-        }
+      if (hist?.[bl.book]?.total && bl.total !== hist[bl.book].total) {
+        const moved = bl.total - hist[bl.book].total;
+        signals.push(`line moved ${moved > 0 ? "↑" : "↓"} ${hist[bl.book].total}→${bl.total}`);
+        score += 10;
       }
-
       if (score >= 50) {
         const side = bl.totalOdds >= (bl.underOdds || -110) ? "Over" : "Under";
-        const conf = score >= 70 ? "HIGH" : score >= 50 ? "MEDIUM" : "LOW";
-        recs.push({
-          type: "Total",
-          book: bl.book,
-          line: bl.total,
-          odds: bl.totalOdds,
-          side,
-          conf,
-          score,
-          call: `Take ${side} ${bl.total} at ${bl.book} (${bl.totalOdds > 0 ? '+' : ''}${bl.totalOdds})`,
-          reasons: [...reasons, ...signals],
-          units: suggestUnits(edge.totalEdge),
-          edge: edge.totalEdge,
-        });
+        const conf = score >= 70 ? "HIGH" : "MEDIUM";
+        recs.push({ type:"Total", book:bl.book, line:bl.total, odds:bl.totalOdds, side, conf, score,
+          call:`Take ${side} ${bl.total} at ${bl.book} (${bl.totalOdds > 0?"+":""}${bl.totalOdds})`,
+          reasons:[...reasons, ...signals], units:suggestUnits(edge.totalEdge), edge:edge.totalEdge });
       }
     }
 
-    // --- SPREAD RECOMMENDATION ---
+    // SPREAD
     if (bl.spread != null && bl.spreadOdds) {
-      let score = 0;
-      let reasons = [];
-      let signals = [];
-
+      let score = 0, reasons = [], signals = [];
       if (edge.spreadEdge >= 5) { score += 40; reasons.push(`${edge.spreadEdge.toFixed(1)}% edge vs sharp consensus`); }
       else if (edge.spreadEdge >= 3) { score += 20; reasons.push(`${edge.spreadEdge.toFixed(1)}% edge vs consensus`); }
-
-      if (bl.spreadOdds > 0) { score += 25; signals.push(`plus money (${bl.spreadOdds > 0 ? '+':''}${bl.spreadOdds})`); }
+      if (bl.spreadOdds > 0) { score += 25; signals.push(`plus money (${bl.spreadOdds > 0?"+":""}${bl.spreadOdds})`); }
       else if (bl.spreadOdds >= -108) { score += 15; signals.push(`reduced juice (${bl.spreadOdds})`); }
       else if (bl.spreadOdds <= -130) { score -= 10; signals.push(`heavy juice (${bl.spreadOdds})`); }
-
       const otherSpreads = game.bookLines.filter(x => x.book !== bl.book && x.spread != null).map(x => x.spread);
       if (otherSpreads.length > 0) {
-        const marketSpread = median(otherSpreads);
-        const halfPointEdge = bl.spread - marketSpread;
-        if (halfPointEdge <= -0.4) { score += 20; signals.push(`better number (${bl.spread > 0?'+':''}${bl.spread} vs mkt ${marketSpread > 0?'+':''}${marketSpread})`); }
-        else if (halfPointEdge >= 0.4) { score -= 10; }
+        const mkt = median(otherSpreads);
+        if (bl.spread - mkt <= -0.4) { score += 20; signals.push(`better number (${bl.spread>0?"+":""}${bl.spread} vs mkt ${mkt>0?"+":""}${mkt})`); }
+        else if (bl.spread - mkt >= 0.4) score -= 10;
       }
-
       const hist = lineHistory[game.id];
-      if (hist) {
-        const firstSpread = hist[bl.book]?.spread;
-        if (firstSpread != null && bl.spread !== firstSpread) {
-          signals.push(`spread moved ${firstSpread > 0?'+':''}${firstSpread}→${bl.spread > 0?'+':''}${bl.spread}`);
-          score += 10;
-        }
+      if (hist?.[bl.book]?.spread != null && bl.spread !== hist[bl.book].spread) {
+        signals.push(`spread moved ${hist[bl.book].spread>0?"+":""}${hist[bl.book].spread}→${bl.spread>0?"+":""}${bl.spread}`);
+        score += 10;
       }
-
       if (score >= 50) {
-        const conf = score >= 70 ? "HIGH" : score >= 50 ? "MEDIUM" : "LOW";
-        recs.push({
-          type: "Spread",
-          book: bl.book,
-          line: bl.spread,
-          odds: bl.spreadOdds,
-          side: bl.spread < 0 ? game.home : game.away,
-          conf,
-          score,
-          call: `Take ${bl.spread < 0 ? game.home : game.away} ${bl.spread > 0 ? '+' : ''}${bl.spread} at ${bl.book} (${bl.spreadOdds > 0 ? '+' : ''}${bl.spreadOdds})`,
-          reasons: [...reasons, ...signals],
-          units: suggestUnits(edge.spreadEdge),
-          edge: edge.spreadEdge,
-        });
+        const conf = score >= 70 ? "HIGH" : "MEDIUM";
+        recs.push({ type:"Spread", book:bl.book, line:bl.spread, odds:bl.spreadOdds,
+          side: bl.spread < 0 ? game.home : game.away, conf, score,
+          call:`Take ${bl.spread < 0 ? game.home : game.away} ${bl.spread>0?"+":""}${bl.spread} at ${bl.book} (${bl.spreadOdds>0?"+":""}${bl.spreadOdds})`,
+          reasons:[...reasons, ...signals], units:suggestUnits(edge.spreadEdge), edge:edge.spreadEdge });
       }
     }
   });
-
-  return recs.sort((a, b) => b.score - a.score);
+  return recs.sort((a,b) => b.score - a.score);
 }
 
-// ─── STORAGE ───
-// localStorage now. Supabase drop-in: replace ld/sv with Supabase client calls.
-// See SUPABASE_SETUP.md (generated below) for exact migration steps.
-const SK = { bets:"sl-bets-v3", bankroll:"sl-bank-v2", theme:"sl-theme-v2", myBooks:"sl-mybooks-v2" };
+// ─── LOCAL STORAGE (theme/settings only — bets now in Supabase) ───
+const SK = { bankroll:"sl-bank-v2", theme:"sl-theme-v2", myBooks:"sl-mybooks-v2" };
 function ld(k,fb){try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb}catch{return fb}}
 function sv(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){console.error(e)}}
 
 // ─── THEMES ───
 const themes = {
-  dark: { bg:"#0d1117",card:"#161b22",cardAlt:"#1c2129",border:"#21262d",borderHi:"#30363d",gold:"#d29922",goldDim:"#9e6a03",goldBg:"rgba(210,153,34,0.08)",green:"#3fb950",greenBg:"rgba(63,185,80,0.1)",red:"#f85149",redBg:"rgba(248,81,73,0.1)",text:"#e6edf3",dim:"#8b949e",muted:"#484f58",toggle:"#8b949e" },
+  dark:  { bg:"#0d1117",card:"#161b22",cardAlt:"#1c2129",border:"#21262d",borderHi:"#30363d",gold:"#d29922",goldDim:"#9e6a03",goldBg:"rgba(210,153,34,0.08)",green:"#3fb950",greenBg:"rgba(63,185,80,0.1)",red:"#f85149",redBg:"rgba(248,81,73,0.1)",text:"#e6edf3",dim:"#8b949e",muted:"#484f58",toggle:"#8b949e" },
   light: { bg:"#ffffff",card:"#f6f8fa",cardAlt:"#eef1f5",border:"#d1d9e0",borderHi:"#b0b8c1",gold:"#b8860b",goldDim:"#8b6914",goldBg:"rgba(184,134,11,0.07)",green:"#1a7f37",greenBg:"rgba(26,127,55,0.08)",red:"#cf222e",redBg:"rgba(207,34,46,0.08)",text:"#1f2328",dim:"#59636e",muted:"#8b949e",toggle:"#59636e" },
 };
 const F = { body:"'Inter',-apple-system,sans-serif", mono:"'SF Mono','JetBrains Mono','Cascadia Code',monospace" };
 
-// ─── MOCK DATA (used when API_DISCONNECTED = true) ───
+// ─── MOCK DATA ───
 function getMockGames(sportKey) {
   const now = new Date();
   const t1 = new Date(now.getTime() + 3*60*60*1000);
   const t2 = new Date(now.getTime() + 6*60*60*1000);
   const t3 = new Date(now.getTime() + 26*60*60*1000);
-
   const mockGames = {
     NBA: [
-      { id:"nba-mock-1", away:"Boston Celtics", home:"Miami Heat", time:t1, total:218.5, homeSpread:-4.5,
+      { id:"nba-mock-1", away:"Boston Celtics", home:"Miami Heat", time:t1,
         books:[{n:"DraftKings",sp:-4.5,so:-112,tot:218.5,too:-110,uto:-110},{n:"FanDuel",sp:-4.5,so:-114,tot:218.5,too:-112,uto:-108},{n:"BetMGM",sp:-4,so:-115,tot:219,too:-110,uto:-110},{n:"Caesars",sp:-4.5,so:-110,tot:218,too:+102,uto:-122},{n:"Pinnacle",sp:-4.5,so:-108,tot:218.5,too:-109,uto:-109},{n:"Circa",sp:-4.5,so:-107,tot:218.5,too:-108,uto:-110}]},
-      { id:"nba-mock-2", away:"LA Lakers", home:"Golden State Warriors", time:t2, total:227,homeSpread:-2,
+      { id:"nba-mock-2", away:"LA Lakers", home:"Golden State Warriors", time:t2,
         books:[{n:"DraftKings",sp:-2,so:-110,tot:227,too:-110,uto:-110},{n:"FanDuel",sp:-2,so:-112,tot:227,too:-108,uto:-112},{n:"BetMGM",sp:-1.5,so:-118,tot:226.5,too:-110,uto:-110},{n:"Caesars",sp:-2,so:-110,tot:227.5,too:+105,uto:-125},{n:"Pinnacle",sp:-2,so:-107,tot:227,too:-106,uto:-112}]},
     ],
     NHL: [
-      { id:"nhl-mock-1", away:"Detroit Red Wings", home:"Toronto Maple Leafs", time:t1, total:6, homeSpread:-1.5,
+      { id:"nhl-mock-1", away:"Detroit Red Wings", home:"Toronto Maple Leafs", time:t1,
         books:[{n:"DraftKings",sp:-1.5,so:+190,tot:6,too:-135,uto:+110},{n:"FanDuel",sp:-1.5,so:+188,tot:6,too:-138,uto:+114},{n:"BetMGM",sp:-1.5,so:+195,tot:6.5,too:+110,uto:-130},{n:"Caesars",sp:-1.5,so:+185,tot:6,too:-140,uto:+116},{n:"Pinnacle",sp:-1.5,so:+200,tot:6,too:-130,uto:+108}]},
-      { id:"nhl-mock-2", away:"Colorado Avalanche", home:"Edmonton Oilers", time:t3, total:6.5, homeSpread:-1.5,
+      { id:"nhl-mock-2", away:"Colorado Avalanche", home:"Edmonton Oilers", time:t3,
         books:[{n:"DraftKings",sp:-1.5,so:+175,tot:6.5,too:-115,uto:-105},{n:"FanDuel",sp:-1.5,so:+172,tot:6.5,too:-118,uto:+100},{n:"BetMGM",sp:-1.5,so:+180,tot:6,too:+115,uto:-135},{n:"Caesars",sp:-1.5,so:+170,tot:6.5,too:-110,uto:-110},{n:"Pinnacle",sp:-1.5,so:+182,tot:6.5,too:-112,uto:-106}]},
     ],
     NCAAB: [
-      { id:"ncaab-mock-1", away:"Duke Blue Devils", home:"North Carolina Tar Heels", time:t2, total:152, homeSpread:+1,
+      { id:"ncaab-mock-1", away:"Duke Blue Devils", home:"North Carolina Tar Heels", time:t2,
         books:[{n:"DraftKings",sp:+1,so:-110,tot:152,too:-110,uto:-110},{n:"FanDuel",sp:+1,so:-112,tot:152,too:-112,uto:-108},{n:"BetMGM",sp:+1.5,so:-115,tot:152.5,too:-108,uto:-112},{n:"Caesars",sp:+1,so:-108,tot:151.5,too:+100,uto:-120}]},
     ],
     NFL: [
-      { id:"nfl-mock-1", away:"Kansas City Chiefs", home:"Baltimore Ravens", time:t3, total:47.5, homeSpread:+3,
+      { id:"nfl-mock-1", away:"Kansas City Chiefs", home:"Baltimore Ravens", time:t3,
         books:[{n:"DraftKings",sp:+3,so:-110,tot:47.5,too:-110,uto:-110},{n:"FanDuel",sp:+3,so:-112,tot:47.5,too:-108,uto:-112},{n:"BetMGM",sp:+2.5,so:-118,tot:48,too:-112,uto:-108},{n:"Caesars",sp:+3,so:-108,tot:47,too:+102,uto:-122},{n:"Pinnacle",sp:+3,so:-107,tot:47.5,too:-106,uto:-112}]},
     ],
-    NCAAF: [],
-    MLB: [],
+    NCAAF: [], MLB: [],
   };
-
-  const sportGames = mockGames[sportKey] || [];
-  return sportGames.map(g => {
-    const bookLines = g.books.map(b => ({ book:b.n, spread:b.sp, spreadOdds:b.so, total:b.tot, totalOdds:b.too, underOdds:b.uto, awaySpread:-b.sp, awaySpreadOdds:b.so }));
+  return (mockGames[sportKey] || []).map(g => {
+    const bookLines = g.books.map(b => ({ book:b.n, spread:b.sp, spreadOdds:b.so, total:b.tot, totalOdds:b.too, underOdds:b.uto, awaySpread:-b.sp }));
     const sharpLines = bookLines.filter(bl => SHARP_BOOKS.includes(bl.book));
     const useSharp = sharpLines.length >= 2;
     const consensusLines = useSharp ? sharpLines : bookLines;
-    const spreadOddsArr = consensusLines.filter(bl => bl.spreadOdds).map(bl => bl.spreadOdds);
-    const totalOddsArr = consensusLines.filter(bl => bl.totalOdds).map(bl => bl.totalOdds);
-    const sharpSpreadOdds = spreadOddsArr.length > 0 ? Math.round(median(spreadOddsArr)) : -110;
-    const sharpTotalOdds = totalOddsArr.length > 0 ? Math.round(median(totalOddsArr)) : -110;
-    const consensusSource = useSharp ? "sharp" : "market";
-    const edges = bookLines.map(bl => ({
-      book: bl.book,
-      spreadEdge: bl.spreadOdds ? Math.max(0, calcEdge(bl.spreadOdds, sharpSpreadOdds)) : 0,
-      totalEdge: bl.totalOdds ? Math.max(0, calcEdge(bl.totalOdds, sharpTotalOdds)) : 0,
-    }));
-    return {
-      id: g.id, away: g.away, home: g.home, time: g.time,
-      dayKey: getDayKey(g.time), dayLabel: getDayLabel(g.time),
-      bookLines, edges,
-      maxSpreadEdge: Math.max(...edges.map(e => e.spreadEdge), 0),
-      maxTotalEdge: Math.max(...edges.map(e => e.totalEdge), 0),
-      sharpSpreadOdds, sharpTotalOdds, consensusSource,
-      live: g.time <= new Date(),
-    };
+    const sharpSpreadOdds = Math.round(median(consensusLines.filter(bl=>bl.spreadOdds).map(bl=>bl.spreadOdds))) || -110;
+    const sharpTotalOdds = Math.round(median(consensusLines.filter(bl=>bl.totalOdds).map(bl=>bl.totalOdds))) || -110;
+    const edges = bookLines.map(bl => ({ book:bl.book, spreadEdge:bl.spreadOdds?Math.max(0,calcEdge(bl.spreadOdds,sharpSpreadOdds)):0, totalEdge:bl.totalOdds?Math.max(0,calcEdge(bl.totalOdds,sharpTotalOdds)):0 }));
+    return { id:g.id, away:g.away, home:g.home, time:g.time, dayKey:getDayKey(g.time), dayLabel:getDayLabel(g.time), bookLines, edges, maxSpreadEdge:Math.max(...edges.map(e=>e.spreadEdge),0), maxTotalEdge:Math.max(...edges.map(e=>e.totalEdge),0), sharpSpreadOdds, sharpTotalOdds, consensusSource:useSharp?"sharp":"market", live:g.time<=new Date() };
   });
 }
 
 // ─── API FETCH ───
 async function fetchOdds(sportApiKey) {
-  if (API_DISCONNECTED) {
-    // Simulate network delay
-    await new Promise(r => setTimeout(r, 600));
-    return { games: null, remaining: null, used: null, error: null, mock: true };
-  }
+  if (API_DISCONNECTED) { await new Promise(r=>setTimeout(r,600)); return { games:null, remaining:null, error:null, mock:true }; }
   const url = `${API_BASE}/odds?sport=${sportApiKey}&markets=spreads,totals`;
   try {
     const res = await fetch(url);
-    if (!res.ok) {
-      const remaining = res.headers.get("x-requests-remaining");
-      return { games: [], remaining: remaining ? parseInt(remaining) : null, error: res.status === 401 ? "Invalid API key" : res.status === 429 ? "Rate limited" : `Error ${res.status}` };
-    }
+    if (!res.ok) { const rem=res.headers.get("x-requests-remaining"); return { games:[], remaining:rem?parseInt(rem):null, error:res.status===401?"Invalid API key":res.status===429?"Rate limited":`Error ${res.status}` }; }
     const data = await res.json();
-    const remaining = res.headers.get("x-requests-remaining");
-    const used = res.headers.get("x-requests-used");
-    return { games: data, remaining: remaining ? parseInt(remaining) : null, used: used ? parseInt(used) : null, error: null };
-  } catch (err) {
-    return { games: [], remaining: null, error: "Network error" };
-  }
+    return { games:data, remaining:parseInt(res.headers.get("x-requests-remaining")||"0"), error:null };
+  } catch(err) { return { games:[], remaining:null, error:"Network error" }; }
 }
 
-function parseApiGames(apiGames, sportKey) {
+function parseApiGames(apiGames) {
   return apiGames.map(g => {
     const time = new Date(g.commence_time);
-    const bookLines = [];
     const bookMap = {};
-    (g.bookmakers || []).forEach(bm => {
-      const bookName = BOOK_MAP[bm.key] || bm.title;
-      if (!bookMap[bookName]) bookMap[bookName] = { book: bookName, spread: null, spreadOdds: null, total: null, totalOdds: null, underOdds: null };
-      (bm.markets || []).forEach(market => {
-        if (market.key === "spreads") {
-          const homeOutcome = market.outcomes.find(o => o.name === g.home_team);
-          const awayOutcome = market.outcomes.find(o => o.name === g.away_team);
-          if (homeOutcome) { bookMap[bookName].spread = homeOutcome.point; bookMap[bookName].spreadOdds = homeOutcome.price; bookMap[bookName].awaySpread = awayOutcome ? awayOutcome.point : -(homeOutcome.point); bookMap[bookName].awaySpreadOdds = awayOutcome ? awayOutcome.price : null; }
-        }
-        if (market.key === "totals") {
-          const ov = market.outcomes.find(o => o.name === "Over");
-          const un = market.outcomes.find(o => o.name === "Under");
-          if (ov) { bookMap[bookName].total = ov.point; bookMap[bookName].totalOdds = ov.price; }
-          if (un) { bookMap[bookName].underOdds = un.price; }
-        }
+    (g.bookmakers||[]).forEach(bm => {
+      const name = BOOK_MAP[bm.key]||bm.title;
+      if (!bookMap[name]) bookMap[name] = { book:name, spread:null, spreadOdds:null, total:null, totalOdds:null, underOdds:null };
+      (bm.markets||[]).forEach(m => {
+        if (m.key==="spreads") { const h=m.outcomes.find(o=>o.name===g.home_team); const a=m.outcomes.find(o=>o.name===g.away_team); if(h){bookMap[name].spread=h.point;bookMap[name].spreadOdds=h.price;bookMap[name].awaySpread=a?a.point:-h.point;} }
+        if (m.key==="totals") { const ov=m.outcomes.find(o=>o.name==="Over"); const un=m.outcomes.find(o=>o.name==="Under"); if(ov){bookMap[name].total=ov.point;bookMap[name].totalOdds=ov.price;} if(un)bookMap[name].underOdds=un.price; }
       });
     });
-    Object.values(bookMap).forEach(bl => { if (bl.spreadOdds !== null || bl.totalOdds !== null) bookLines.push(bl); });
-    const sharpLines = bookLines.filter(bl => SHARP_BOOKS.includes(bl.book));
+    const bookLines = Object.values(bookMap).filter(bl=>bl.spreadOdds!==null||bl.totalOdds!==null);
+    const sharpLines = bookLines.filter(bl=>SHARP_BOOKS.includes(bl.book));
     const useSharp = sharpLines.length >= 2;
-    const consensusLines = useSharp ? sharpLines : bookLines;
-    const spreadOddsArr = consensusLines.filter(bl => bl.spreadOdds).map(bl => bl.spreadOdds);
-    const totalOddsArr = consensusLines.filter(bl => bl.totalOdds).map(bl => bl.totalOdds);
-    const sharpSpreadOdds = spreadOddsArr.length > 0 ? Math.round(median(spreadOddsArr)) : -110;
-    const sharpTotalOdds = totalOddsArr.length > 0 ? Math.round(median(totalOddsArr)) : -110;
-    const consensusSource = useSharp ? "sharp" : "market";
-    const edges = bookLines.map(bl => ({ book: bl.book, spreadEdge: bl.spreadOdds ? Math.max(0, calcEdge(bl.spreadOdds, sharpSpreadOdds)) : 0, totalEdge: bl.totalOdds ? Math.max(0, calcEdge(bl.totalOdds, sharpTotalOdds)) : 0 }));
-    return { id: g.id, away: g.away_team, home: g.home_team, time, dayKey: getDayKey(time), dayLabel: getDayLabel(time), bookLines, edges, maxSpreadEdge: Math.max(...edges.map(e => e.spreadEdge), 0), maxTotalEdge: Math.max(...edges.map(e => e.totalEdge), 0), sharpSpreadOdds, sharpTotalOdds, consensusSource, live: time <= new Date() };
+    const cl = useSharp ? sharpLines : bookLines;
+    const sharpSpreadOdds = Math.round(median(cl.filter(bl=>bl.spreadOdds).map(bl=>bl.spreadOdds)))||-110;
+    const sharpTotalOdds = Math.round(median(cl.filter(bl=>bl.totalOdds).map(bl=>bl.totalOdds)))||-110;
+    const edges = bookLines.map(bl=>({ book:bl.book, spreadEdge:bl.spreadOdds?Math.max(0,calcEdge(bl.spreadOdds,sharpSpreadOdds)):0, totalEdge:bl.totalOdds?Math.max(0,calcEdge(bl.totalOdds,sharpTotalOdds)):0 }));
+    return { id:g.id, away:g.away_team, home:g.home_team, time, dayKey:getDayKey(time), dayLabel:getDayLabel(time), bookLines, edges, maxSpreadEdge:Math.max(...edges.map(e=>e.spreadEdge),0), maxTotalEdge:Math.max(...edges.map(e=>e.totalEdge),0), sharpSpreadOdds, sharpTotalOdds, consensusSource:useSharp?"sharp":"market", live:time<=new Date() };
   });
 }
 
-function getBookEdges(game, bf) {
-  if (bf === "ALL") return { spreadEdge: game.maxSpreadEdge, totalEdge: game.maxTotalEdge };
-  const e = game.edges.find(x => x.book === bf);
-  return e || { spreadEdge: 0, totalEdge: 0 };
+function getBookEdges(game,bf) {
+  if(bf==="ALL") return {spreadEdge:game.maxSpreadEdge,totalEdge:game.maxTotalEdge};
+  return game.edges.find(x=>x.book===bf)||{spreadEdge:0,totalEdge:0};
 }
 
 // ─── COMPONENTS ───
 function EdgeBadge({edge,T}){
-  const s=edge>=5,v=edge>=3;
-  if(s) return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:800,fontFamily:F.mono,background:"rgba(63,185,80,0.25)",color:"#2ee06e",border:"1px solid rgba(63,185,80,0.5)",letterSpacing:0.3}}>▲ {edge.toFixed(1)}%</span>;
-  if(v) return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:800,fontFamily:F.mono,background:"rgba(230,170,20,0.2)",color:"#f0b820",border:"1px solid rgba(230,170,20,0.45)",letterSpacing:0.3}}>● {edge.toFixed(1)}%</span>;
-  return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:600,fontFamily:F.mono,background:T.bg,color:T.muted,border:`1px solid ${T.border}`,letterSpacing:0.3}}>{edge.toFixed(1)}%</span>;
+  if(edge>=5) return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:800,fontFamily:F.mono,background:"rgba(63,185,80,0.25)",color:"#2ee06e",border:"1px solid rgba(63,185,80,0.5)"}}>▲ {edge.toFixed(1)}%</span>;
+  if(edge>=3) return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:800,fontFamily:F.mono,background:"rgba(230,170,20,0.2)",color:"#f0b820",border:"1px solid rgba(230,170,20,0.45)"}}>● {edge.toFixed(1)}%</span>;
+  return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:600,fontFamily:F.mono,background:T.bg,color:T.muted,border:`1px solid ${T.border}`}}>{edge.toFixed(1)}%</span>;
 }
 
 function ConfBadge({conf,T}){
-  const cfg = conf==="HIGH" ? {bg:"rgba(63,185,80,0.2)",color:"#2ee06e",border:"rgba(63,185,80,0.5)"} : conf==="MEDIUM" ? {bg:"rgba(230,170,20,0.2)",color:"#f0b820",border:"rgba(230,170,20,0.45)"} : {bg:`${T.muted}15`,color:T.muted,border:T.border};
-  return <span style={{padding:"2px 7px",borderRadius:3,fontSize:10,fontWeight:800,fontFamily:F.mono,background:cfg.bg,color:cfg.color,border:`1px solid ${cfg.border}`,letterSpacing:0.5}}>{conf}</span>;
+  const cfg=conf==="HIGH"?{bg:"rgba(63,185,80,0.2)",color:"#2ee06e",border:"rgba(63,185,80,0.5)"}:conf==="MEDIUM"?{bg:"rgba(230,170,20,0.2)",color:"#f0b820",border:"rgba(230,170,20,0.45)"}:{bg:`${T.muted}15`,color:T.muted,border:T.border};
+  return <span style={{padding:"2px 7px",borderRadius:3,fontSize:10,fontWeight:800,fontFamily:F.mono,background:cfg.bg,color:cfg.color,border:`1px solid ${cfg.border}`}}>{conf}</span>;
 }
 
-// ─── BET RECOMMENDATION CARD ───
-function RecommendationPanel({game, myBooks, lineHistory, onAddBet, T}){
-  const [open, setOpen] = useState(false);
-  const recs = useMemo(() => generateRecommendation(game, myBooks, lineHistory), [game, myBooks, lineHistory]);
-  if (recs.length === 0) return null;
-  const top = recs[0];
+function LineMovement({current,first,T}){
+  if(!first||current===first) return <span style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>{current}</span>;
+  const up = typeof current==="number"&&typeof first==="number" ? current>first : false;
+  return <span style={{color:up?"#f0b820":T.green,fontSize:9,fontFamily:F.mono,fontWeight:700}} title={`Opened: ${first}`}>{current} <span style={{fontSize:8}}>{up?"↑":"↓"}{first}</span></span>;
+}
+
+function RecommendationPanel({game,myBooks,lineHistory,onAddBet,T}){
+  const [open,setOpen]=useState(false);
+  const recs=useMemo(()=>generateRecommendation(game,myBooks,lineHistory),[game,myBooks,lineHistory]);
+  if(recs.length===0) return null;
+  const top=recs[0];
   return (
     <div style={{marginTop:10,background:`${T.gold}08`,border:`1px solid ${T.gold}30`,borderRadius:4,overflow:"hidden"}}>
-      <div onClick={()=>setOpen(!open)} style={{padding:"8px 10px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <div onClick={e=>{e.stopPropagation();setOpen(!open);}} style={{padding:"8px 10px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <span style={{color:T.gold,fontSize:9,fontWeight:800,fontFamily:F.mono,letterSpacing:1}}>⚡ SHARP CALL</span>
           <ConfBadge conf={top.conf} T={T}/>
           <span style={{color:T.text,fontSize:11,fontWeight:600}}>{top.call}</span>
         </div>
-        <span style={{color:T.muted,fontSize:12,transition:"transform 0.15s",transform:open?"rotate(180deg)":"none"}}>▾</span>
+        <span style={{color:T.muted,fontSize:12,transform:open?"rotate(180deg)":"none",transition:"0.15s"}}>▾</span>
       </div>
       {open&&<div style={{borderTop:`1px solid ${T.gold}20`,padding:"8px 10px"}}>
         {recs.map((rec,i)=>(
-          <div key={i} style={{marginBottom:i<recs.length-1?10:0,paddingBottom:i<recs.length-1?10:0,borderBottom:i<recs.length-1?`1px solid ${T.border}`:""}}> 
+          <div key={i} style={{marginBottom:i<recs.length-1?10:0,paddingBottom:i<recs.length-1?10:0,borderBottom:i<recs.length-1?`1px solid ${T.border}`:""}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4}}>
               <div>
-                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
-                  <ConfBadge conf={rec.conf} T={T}/>
-                  <span style={{color:T.text,fontSize:11,fontWeight:700,fontFamily:F.mono}}>{rec.call}</span>
-                </div>
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}><ConfBadge conf={rec.conf} T={T}/><span style={{color:T.text,fontSize:11,fontWeight:700,fontFamily:F.mono}}>{rec.call}</span></div>
                 <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:4}}>
-                  {rec.reasons.map((r,j)=>(
-                    <span key={j} style={{fontSize:9,fontFamily:F.mono,padding:"2px 6px",borderRadius:2,background:`${T.muted}12`,color:T.dim,border:`1px solid ${T.border}`}}>{r}</span>
-                  ))}
+                  {rec.reasons.map((r,j)=><span key={j} style={{fontSize:9,fontFamily:F.mono,padding:"2px 6px",borderRadius:2,background:`${T.muted}12`,color:T.dim,border:`1px solid ${T.border}`}}>{r}</span>)}
                 </div>
               </div>
               <button onClick={e=>{e.stopPropagation();onAddBet({game:`${game.away} @ ${game.home}`,type:rec.type,line:`${rec.line>0?"+":""}${rec.line}`,odds:rec.odds,book:rec.book,edge:rec.edge,units:rec.units,sport:game.id.split("-")[0]||"?",entryOdds:rec.odds});}}
-                style={{padding:"4px 10px",borderRadius:3,border:`1px solid ${rec.conf==="HIGH"?"rgba(46,224,110,0.4)":rec.conf==="MEDIUM"?"rgba(240,184,32,0.4)":T.border}`,background:rec.conf==="HIGH"?"rgba(46,224,110,0.1)":rec.conf==="MEDIUM"?"rgba(240,184,32,0.08)":"transparent",color:rec.conf==="HIGH"?"#2ee06e":rec.conf==="MEDIUM"?"#f0b820":T.dim,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono,flexShrink:0,marginLeft:8}}>
+                style={{padding:"4px 10px",borderRadius:3,border:`1px solid ${rec.conf==="HIGH"?"rgba(46,224,110,0.4)":"rgba(240,184,32,0.4)"}`,background:rec.conf==="HIGH"?"rgba(46,224,110,0.1)":"rgba(240,184,32,0.08)",color:rec.conf==="HIGH"?"#2ee06e":"#f0b820",fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono,marginLeft:8,flexShrink:0}}>
                 + TRACK {rec.units}u
               </button>
             </div>
@@ -417,25 +368,15 @@ function RecommendationPanel({game, myBooks, lineHistory, onAddBet, T}){
   );
 }
 
-// ─── LINE MOVEMENT INDICATOR ───
-function LineMovement({current, first, label, T}){
-  if (!first || current === first) return <span style={{color:T.muted,fontSize:9,fontFamily:F.mono}}>{current}</span>;
-  const up = current > first;
-  return <span style={{color:up?"#f0b820":T.green,fontSize:9,fontFamily:F.mono,fontWeight:700}} title={`Opened: ${first}`}>
-    {current} <span style={{fontSize:8}}>{up?"↑":"↓"}{first}</span>
-  </span>;
-}
-
 function GameCard({game,bookFilter,onAddBet,bankroll,unitSize,T,myBooks,lineHistory}){
   const [open,setOpen]=useState(false);
   const be=getBookEdges(game,bookFilter);
   const hasStrong=be.spreadEdge>=5||be.totalEdge>=5;
   const hasValue=be.spreadEdge>=3||be.totalEdge>=3;
-  const visibleBooks = game.bookLines.filter(bl=>myBooks.includes(bl.book));
-  const visibleEdges = game.edges.filter(e=>myBooks.includes(e.book));
-
+  const visibleBooks=game.bookLines.filter(bl=>myBooks.includes(bl.book));
+  const visibleEdges=game.edges.filter(e=>myBooks.includes(e.book));
   return (
-    <div onClick={()=>setOpen(!open)} style={{background:T.card,border:`1px solid ${hasStrong?`rgba(63,185,80,0.3)`:hasValue?`rgba(230,170,20,0.25)`:T.border}`,borderRadius:6,padding:"12px 14px",cursor:"pointer",marginBottom:4,borderLeft:`4px solid ${hasStrong?"#2ee06e":hasValue?"#f0b820":"transparent"}`,transition:"all 0.15s"}}>
+    <div onClick={()=>setOpen(!open)} style={{background:T.card,border:`1px solid ${hasStrong?"rgba(63,185,80,0.3)":hasValue?"rgba(230,170,20,0.25)":T.border}`,borderRadius:6,padding:"12px 14px",cursor:"pointer",marginBottom:4,borderLeft:`4px solid ${hasStrong?"#2ee06e":hasValue?"#f0b820":"transparent"}`,transition:"all 0.15s"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
@@ -444,58 +385,37 @@ function GameCard({game,bookFilter,onAddBet,bankroll,unitSize,T,myBooks,lineHist
             <span style={{color:T.muted,fontSize:10,fontFamily:F.mono}}>@</span>
             <span style={{color:T.text,fontSize:13,fontWeight:600}}>{game.home}</span>
           </div>
-          <div style={{color:T.muted,fontSize:10,fontFamily:F.mono,marginTop:3}}>
-            {game.dayLabel} · {game.time.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
-            {visibleBooks.length>0&&<> · {visibleBooks.length} book{visibleBooks.length!==1?"s":""}</>}
-          </div>
+          <div style={{color:T.muted,fontSize:10,fontFamily:F.mono,marginTop:3}}>{game.dayLabel} · {game.time.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}{visibleBooks.length>0&&<> · {visibleBooks.length} books</>}</div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           <div style={{textAlign:"center"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:2}}>SPR</div><EdgeBadge edge={be.spreadEdge} T={T}/></div>
           <div style={{textAlign:"center"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:2}}>TOT</div><EdgeBadge edge={be.totalEdge} T={T}/></div>
-          <span style={{color:T.muted,fontSize:14,transition:"transform 0.15s",transform:open?"rotate(180deg)":"none"}}>▾</span>
+          <span style={{color:T.muted,fontSize:14,transform:open?"rotate(180deg)":"none",transition:"0.15s"}}>▾</span>
         </div>
       </div>
       {open&&(
         <div style={{marginTop:12,borderTop:`1px solid ${T.border}`,paddingTop:12}} onClick={e=>e.stopPropagation()}>
-          {/* Sharp consensus info */}
           <div style={{marginBottom:8,padding:"4px 8px",background:`${T.muted}10`,borderRadius:3,display:"inline-block"}}>
-            <span style={{color:T.muted,fontSize:9,fontFamily:F.mono}}>
-              {game.consensusSource==="sharp"?"Sharp":"Market"} consensus: spread {game.sharpSpreadOdds} · total {game.sharpTotalOdds}
-              {game.consensusSource!=="sharp"&&<span style={{color:T.gold}}> · no sharp books available</span>}
-            </span>
+            <span style={{color:T.muted,fontSize:9,fontFamily:F.mono}}>{game.consensusSource==="sharp"?"Sharp":"Market"} consensus: spread {game.sharpSpreadOdds} · total {game.sharpTotalOdds}{game.consensusSource!=="sharp"&&<span style={{color:T.gold}}> · no sharp books</span>}</span>
           </div>
-          {/* Line comparison table */}
           <div style={{display:"grid",gridTemplateColumns:"1fr repeat(5,auto)",gap:"5px 14px",fontSize:10,fontFamily:F.mono}}>
-            <div style={{color:T.muted,fontWeight:600}}>BOOK</div>
-            <div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>SPR</div>
-            <div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>S.ODDS</div>
-            <div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>TOTAL</div>
-            <div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>O.ODDS</div>
-            <div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>U.ODDS</div>
+            {["BOOK","SPR","S.ODDS","TOTAL","O.ODDS","U.ODDS"].map(h=><div key={h} style={{color:T.muted,fontWeight:600,textAlign:h==="BOOK"?"left":"right"}}>{h}</div>)}
             {visibleBooks.map(bl=>{
               const be2=game.edges.find(e=>e.book===bl.book)||{spreadEdge:0,totalEdge:0};
-              const hist = lineHistory[game.id];
-              const firstBook = hist?.[bl.book];
+              const hist=lineHistory[game.id]?.[bl.book];
               return <React.Fragment key={bl.book}>
-                <div style={{color:T.text,fontWeight:400}}>{short(bl.book)}</div>
-                {/* Spread with line movement */}
-                <div style={{textAlign:"right"}}>
-                  {bl.spread!=null ? <LineMovement current={`${bl.spread>0?"+":""}${bl.spread}`} first={firstBook?.spread!=null?`${firstBook.spread>0?"+":""}${firstBook.spread}`:null} T={T}/> : <span style={{color:T.muted}}>—</span>}
-                </div>
+                <div style={{color:T.text}}>{short(bl.book)}</div>
+                <div style={{textAlign:"right"}}>{bl.spread!=null?<LineMovement current={`${bl.spread>0?"+":""}${bl.spread}`} first={hist?.spread!=null?`${hist.spread>0?"+":""}${hist.spread}`:null} T={T}/>:<span style={{color:T.muted}}>—</span>}</div>
                 <div style={{textAlign:"right",color:be2.spreadEdge>=5?"#2ee06e":be2.spreadEdge>=3?"#f0b820":T.dim,fontWeight:be2.spreadEdge>=3?700:400}}>{bl.spreadOdds||"—"}</div>
-                {/* Total with line movement */}
-                <div style={{textAlign:"right"}}>
-                  {bl.total ? <LineMovement current={bl.total} first={firstBook?.total||null} T={T}/> : <span style={{color:T.muted}}>—</span>}
-                </div>
+                <div style={{textAlign:"right"}}>{bl.total?<LineMovement current={bl.total} first={hist?.total||null} T={T}/>:<span style={{color:T.muted}}>—</span>}</div>
                 <div style={{textAlign:"right",color:be2.totalEdge>=5?"#2ee06e":be2.totalEdge>=3?"#f0b820":T.dim,fontWeight:be2.totalEdge>=3?700:400}}>{bl.totalOdds||"—"}</div>
                 <div style={{textAlign:"right",color:T.dim}}>{bl.underOdds||"—"}</div>
               </React.Fragment>;
             })}
           </div>
-          {/* Per-book edge breakdown */}
-          {visibleEdges.length>0&&<div style={{marginTop:10,display:"grid",gridTemplateColumns:`repeat(${Math.min(visibleEdges.length,6)},1fr)`,gap:4,overflowX:visibleEdges.length>6?"auto":"visible"}}>
+          {visibleEdges.length>0&&<div style={{marginTop:10,display:"grid",gridTemplateColumns:`repeat(${Math.min(visibleEdges.length,6)},1fr)`,gap:4}}>
             {visibleEdges.map(e=>(
-              <div key={e.book} style={{padding:"6px 8px",background:T.bg,borderRadius:3,border:`1px solid ${T.border}`,textAlign:"center",minWidth:visibleEdges.length>6?60:"auto"}}>
+              <div key={e.book} style={{padding:"6px 8px",background:T.bg,borderRadius:3,border:`1px solid ${T.border}`,textAlign:"center"}}>
                 <div style={{color:T.muted,fontSize:8,fontFamily:F.mono,marginBottom:2}}>{short(e.book)}</div>
                 <div style={{display:"flex",justifyContent:"center",gap:8}}>
                   <span style={{fontSize:9,fontFamily:F.mono,color:e.spreadEdge>=5?"#2ee06e":e.spreadEdge>=3?"#f0b820":T.muted,fontWeight:e.spreadEdge>=3?700:400}}>S:{e.spreadEdge.toFixed(1)}%</span>
@@ -504,21 +424,14 @@ function GameCard({game,bookFilter,onAddBet,bankroll,unitSize,T,myBooks,lineHist
               </div>
             ))}
           </div>}
-          {/* Sharp Recommendation Panel */}
           <RecommendationPanel game={game} myBooks={myBooks} lineHistory={lineHistory} onAddBet={onAddBet} T={T}/>
-          {/* Quick track buttons */}
           <div style={{marginTop:10,display:"flex",gap:4,flexWrap:"wrap"}}>
             {visibleBooks.map(bl=>{
               const be2=game.edges.find(e=>e.book===bl.book)||{spreadEdge:0,totalEdge:0};
+              const btnStyle=(edge)=>({padding:"4px 10px",borderRadius:3,border:`1px solid ${edge>=5?"rgba(46,224,110,0.4)":edge>=3?"rgba(240,184,32,0.4)":T.border}`,background:edge>=5?"rgba(46,224,110,0.1)":edge>=3?"rgba(240,184,32,0.08)":"transparent",color:edge>=5?"#2ee06e":edge>=3?"#f0b820":T.dim,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono});
               return [
-                be2.spreadEdge>0&&bl.spreadOdds && <button key={`s-${bl.book}`} onClick={e=>{e.stopPropagation();onAddBet({game:`${game.away} @ ${game.home}`,type:"Spread",line:`${bl.spread>0?"+":""}${bl.spread}`,odds:bl.spreadOdds,book:bl.book,edge:be2.spreadEdge,units:suggestUnits(be2.spreadEdge),sport:game.id.split("-")[0]||"?",entryOdds:bl.spreadOdds});}}
-                  style={{padding:"4px 10px",borderRadius:3,border:`1px solid ${be2.spreadEdge>=5?"rgba(46,224,110,0.4)":be2.spreadEdge>=3?"rgba(240,184,32,0.4)":T.border}`,background:be2.spreadEdge>=5?"rgba(46,224,110,0.1)":be2.spreadEdge>=3?"rgba(240,184,32,0.08)":"transparent",color:be2.spreadEdge>=5?"#2ee06e":be2.spreadEdge>=3?"#f0b820":T.dim,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>
-                  + {short(bl.book)} Spr {suggestUnits(be2.spreadEdge)}u
-                </button>,
-                be2.totalEdge>0&&bl.totalOdds && <button key={`t-${bl.book}`} onClick={e=>{e.stopPropagation();onAddBet({game:`${game.away} @ ${game.home}`,type:"Total",line:`${bl.total}`,odds:bl.totalOdds,book:bl.book,edge:be2.totalEdge,units:suggestUnits(be2.totalEdge),sport:game.id.split("-")[0]||"?",entryOdds:bl.totalOdds});}}
-                  style={{padding:"4px 10px",borderRadius:3,border:`1px solid ${be2.totalEdge>=5?"rgba(46,224,110,0.4)":be2.totalEdge>=3?"rgba(240,184,32,0.4)":T.border}`,background:be2.totalEdge>=5?"rgba(46,224,110,0.1)":be2.totalEdge>=3?"rgba(240,184,32,0.08)":"transparent",color:be2.totalEdge>=5?"#2ee06e":be2.totalEdge>=3?"#f0b820":T.dim,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>
-                  + {short(bl.book)} Tot {suggestUnits(be2.totalEdge)}u
-                </button>
+                be2.spreadEdge>0&&bl.spreadOdds&&<button key={`s-${bl.book}`} onClick={e=>{e.stopPropagation();onAddBet({game:`${game.away} @ ${game.home}`,type:"Spread",line:`${bl.spread>0?"+":""}${bl.spread}`,odds:bl.spreadOdds,book:bl.book,edge:be2.spreadEdge,units:suggestUnits(be2.spreadEdge),sport:game.id.split("-")[0]||"?",entryOdds:bl.spreadOdds});}} style={btnStyle(be2.spreadEdge)}>+ {short(bl.book)} Spr {suggestUnits(be2.spreadEdge)}u</button>,
+                be2.totalEdge>0&&bl.totalOdds&&<button key={`t-${bl.book}`} onClick={e=>{e.stopPropagation();onAddBet({game:`${game.away} @ ${game.home}`,type:"Total",line:`${bl.total}`,odds:bl.totalOdds,book:bl.book,edge:be2.totalEdge,units:suggestUnits(be2.totalEdge),sport:game.id.split("-")[0]||"?",entryOdds:bl.totalOdds});}} style={btnStyle(be2.totalEdge)}>+ {short(bl.book)} Tot {suggestUnits(be2.totalEdge)}u</button>,
               ];
             })}
           </div>
@@ -528,80 +441,45 @@ function GameCard({game,bookFilter,onAddBet,bankroll,unitSize,T,myBooks,lineHist
   );
 }
 
-// ─── EXPOSURE WARNING ───
 function ExposureWarning({bets,bankroll,unitSize,T}){
   if(bankroll<=0) return null;
   const pending=bets.filter(b=>!b.result);
   if(pending.length===0) return null;
   const totalAction=pending.reduce((s,b)=>s+b.units*unitSize,0);
-  const pct=(totalAction/bankroll*100);
+  const pct=totalAction/bankroll*100;
   const bySport={};
   pending.forEach(b=>{bySport[b.sport]=(bySport[b.sport]||0)+b.units*unitSize;});
-  const worstSport=Object.entries(bySport).sort((a,b)=>b[1]-a[1])[0];
-  const worstSportPct=worstSport?(worstSport[1]/bankroll*100):0;
-  const todayBets=pending.filter(b=>{const d=new Date(b.timestamp);const t=new Date();return d.toDateString()===t.toDateString();});
-  const todayPct=(todayBets.reduce((s,b)=>s+b.units*unitSize,0)/bankroll*100);
+  const worst=Object.entries(bySport).sort((a,b)=>b[1]-a[1])[0];
+  const worstPct=worst?worst[1]/bankroll*100:0;
+  const todayPct=pending.filter(b=>new Date(b.timestamp).toDateString()===new Date().toDateString()).reduce((s,b)=>s+b.units*unitSize,0)/bankroll*100;
   const warnings=[];
   if(pct>=25) warnings.push(`${pct.toFixed(0)}% of bankroll in action (${pending.length} pending · $${totalAction.toLocaleString()})`);
-  if(worstSportPct>=15) warnings.push(`${worstSportPct.toFixed(0)}% exposed to ${worstSport[0]}`);
+  if(worstPct>=15) warnings.push(`${worstPct.toFixed(0)}% exposed to ${worst[0]}`);
   if(todayPct>=15) warnings.push(`${todayPct.toFixed(0)}% of bankroll bet today`);
   if(warnings.length===0) return null;
-  return (
-    <div style={{marginBottom:10,padding:"8px 12px",background:T.redBg,border:`1px solid ${T.red}22`,borderRadius:4}}>
-      <div style={{color:T.red,fontSize:10,fontWeight:700,fontFamily:F.mono,marginBottom:2}}>⚠ EXPOSURE WARNING</div>
-      {warnings.map((w,i)=><div key={i} style={{color:T.red,fontSize:10,lineHeight:1.6}}>{w}</div>)}
-    </div>
-  );
+  return <div style={{marginBottom:10,padding:"8px 12px",background:T.redBg,border:`1px solid ${T.red}22`,borderRadius:4}}><div style={{color:T.red,fontSize:10,fontWeight:700,fontFamily:F.mono,marginBottom:2}}>⚠ EXPOSURE WARNING</div>{warnings.map((w,i)=><div key={i} style={{color:T.red,fontSize:10,lineHeight:1.6}}>{w}</div>)}</div>;
 }
 
-// ─── CLV ENTRY MODAL ───
-function CLVEntry({bet, onSave, onClose, T}){
-  const [closingOdds, setClosingOdds] = useState("");
-  const preview = closingOdds ? calcCLV(bet.entryOdds || bet.odds, parseInt(closingOdds)) : null;
+function CLVEntry({bet,onSave,onClose,T}){
+  const [closingOdds,setClosingOdds]=useState("");
+  const preview=closingOdds?calcCLV(bet.entryOdds||bet.odds,parseInt(closingOdds)):null;
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20}}>
       <div style={{background:T.card,border:`1px solid ${T.borderHi}`,borderRadius:8,padding:20,width:"100%",maxWidth:340}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-          <span style={{color:T.text,fontSize:13,fontWeight:700}}>Enter Closing Line</span>
-          <button onClick={onClose} style={{background:"none",border:"none",color:T.muted,fontSize:15,cursor:"pointer"}}>×</button>
-        </div>
-        <div style={{marginBottom:12,padding:"8px 10px",background:T.bg,borderRadius:4,border:`1px solid ${T.border}`}}>
-          <div style={{color:T.dim,fontSize:10,fontFamily:F.mono}}>{bet.game} · {bet.type} {bet.line}</div>
-          <div style={{color:T.text,fontSize:11,fontFamily:F.mono,marginTop:2}}>Your entry: <strong>{bet.entryOdds || bet.odds}</strong></div>
-        </div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><span style={{color:T.text,fontSize:13,fontWeight:700}}>Enter Closing Line</span><button onClick={onClose} style={{background:"none",border:"none",color:T.muted,fontSize:15,cursor:"pointer"}}>×</button></div>
+        <div style={{marginBottom:12,padding:"8px 10px",background:T.bg,borderRadius:4,border:`1px solid ${T.border}`}}><div style={{color:T.dim,fontSize:10,fontFamily:F.mono}}>{bet.game} · {bet.type} {bet.line}</div><div style={{color:T.text,fontSize:11,fontFamily:F.mono,marginTop:2}}>Your entry: <strong>{bet.entryOdds||bet.odds}</strong></div></div>
         <label style={{color:T.muted,fontSize:9,fontWeight:600,fontFamily:F.mono,letterSpacing:0.8,display:"block",marginBottom:4}}>CLOSING ODDS (e.g. -125 or +105)</label>
-        <input
-          autoFocus
-          value={closingOdds}
-          onChange={e=>setClosingOdds(e.target.value.replace(/[^0-9+\-]/g,""))}
-          placeholder="-125"
-          style={{width:"100%",padding:"8px 10px",background:T.bg,border:`1px solid ${T.borderHi}`,borderRadius:4,color:T.text,fontSize:14,fontFamily:F.mono,outline:"none",marginBottom:10}}
-        />
-        {preview !== null && (
-          <div style={{marginBottom:12,padding:"6px 10px",borderRadius:3,background:preview>=0?T.greenBg:T.redBg,border:`1px solid ${preview>=0?T.green+"30":T.red+"30"}`}}>
-            <span style={{color:preview>=0?T.green:T.red,fontSize:12,fontWeight:700,fontFamily:F.mono}}>
-              CLV: {preview>=0?"+":""}{preview.toFixed(2)}%
-            </span>
-            <span style={{color:T.dim,fontSize:10,fontFamily:F.mono,marginLeft:8}}>
-              {preview>=0?"✓ Beat the closing line":"✗ Market moved against you"}
-            </span>
-          </div>
-        )}
-        <button
-          onClick={()=>{if(closingOdds){onSave(parseInt(closingOdds));onClose();}}}
-          disabled={!closingOdds}
-          style={{width:"100%",padding:9,background:closingOdds?T.green:"transparent",color:closingOdds?T.bg:T.muted,border:`1px solid ${closingOdds?T.green:T.border}`,borderRadius:4,fontSize:12,fontWeight:700,cursor:closingOdds?"pointer":"default",fontFamily:F.mono}}
-        >SAVE CLV</button>
+        <input autoFocus value={closingOdds} onChange={e=>setClosingOdds(e.target.value.replace(/[^0-9+\-]/g,""))} placeholder="-125" style={{width:"100%",padding:"8px 10px",background:T.bg,border:`1px solid ${T.borderHi}`,borderRadius:4,color:T.text,fontSize:14,fontFamily:F.mono,outline:"none",marginBottom:10}}/>
+        {preview!==null&&<div style={{marginBottom:12,padding:"6px 10px",borderRadius:3,background:preview>=0?T.greenBg:T.redBg,border:`1px solid ${preview>=0?T.green+"30":T.red+"30"}`}}><span style={{color:preview>=0?T.green:T.red,fontSize:12,fontWeight:700,fontFamily:F.mono}}>CLV: {preview>=0?"+":""}{preview.toFixed(2)}%</span><span style={{color:T.dim,fontSize:10,fontFamily:F.mono,marginLeft:8}}>{preview>=0?"✓ Beat the closing line":"✗ Market moved against you"}</span></div>}
+        <button onClick={()=>{if(closingOdds){onSave(parseInt(closingOdds));onClose();}}} disabled={!closingOdds} style={{width:"100%",padding:9,background:closingOdds?T.green:"transparent",color:closingOdds?T.bg:T.muted,border:`1px solid ${closingOdds?T.green:T.border}`,borderRadius:4,fontSize:12,fontWeight:700,cursor:closingOdds?"pointer":"default",fontFamily:F.mono}}>SAVE CLV</button>
       </div>
     </div>
   );
 }
 
-// ─── BET TRACKER ───
-function BetTracker({bets,setBets,bankroll,unitSize,T}){
+function BetTracker({bets,setBets,bankroll,unitSize,T,dbSyncing}){
   const [showBreakdown,setShowBreakdown]=useState(false);
-  const [clvTarget, setCLVTarget] = useState(null); // index of bet awaiting CLV entry
-
+  const [clvTarget,setCLVTarget]=useState(null);
   const stats=useMemo(()=>{
     const s=bets.filter(b=>b.result),w=s.filter(b=>b.result==="W"),l=s.filter(b=>b.result==="L"),p=s.filter(b=>b.result==="P");
     const uw=w.reduce((s,b)=>s+b.units*(100/Math.abs(b.odds)),0),ul=l.reduce((s,b)=>s+b.units,0),net=uw-ul;
@@ -610,97 +488,72 @@ function BetTracker({bets,setBets,bankroll,unitSize,T}){
     const wr=s.length>0?(w.length/Math.max(s.length-p.length,1))*100:0;
     return {wins:w.length,losses:l.length,pushes:p.length,netUnits:net,roi,avgEdge:ae,winRate:wr,pending:bets.length-s.length};
   },[bets]);
-
   const sportBreakdowns=useMemo(()=>{
     const map={};
     bets.forEach(b=>{if(!map[b.sport])map[b.sport]={bets:0,settled:0,wins:0,losses:0,pushes:0,unitsWon:0,unitsLost:0,totalUnits:0,edgeSum:0};const m=map[b.sport];m.bets++;m.edgeSum+=b.edge;if(b.result){m.settled++;if(b.result==="W"){m.wins++;m.unitsWon+=b.units*(100/Math.abs(b.odds));}if(b.result==="L"){m.losses++;m.unitsLost+=b.units;}if(b.result==="P")m.pushes++;m.totalUnits+=b.units;}});
     return Object.entries(map).map(([sport,d])=>({sport,...d,net:d.unitsWon-d.unitsLost,roi:d.settled>0?((d.unitsWon-d.unitsLost)/Math.max(d.totalUnits,1))*100:0,winRate:d.settled>0?(d.wins/Math.max(d.settled-d.pushes,1))*100:0,avgEdge:d.bets>0?d.edgeSum/d.bets:0})).sort((a,b)=>b.net-a.net);
   },[bets]);
-
   const nd=bankroll>0?stats.netUnits*unitSize:0;
 
-  const saveCLV = (idx, closingOdds) => {
+  const handleResult = async (i, r) => {
+    const updated = [...bets];
+    updated[i] = { ...updated[i], result: r };
+    setBets(updated);
+    if (updated[i].id) await dbUpdate(updated[i].id, { result: r });
+  };
+
+  const handleDelete = async (i) => {
+    const bet = bets[i];
+    setBets(bets.filter((_,j)=>j!==i));
+    if (bet.id) await dbDelete(bet.id);
+  };
+
+  const handleCLVSave = async (idx, closingOdds) => {
     const updated = [...bets];
     const bet = updated[idx];
     const clv = calcCLV(bet.entryOdds || bet.odds, closingOdds);
     updated[idx] = { ...bet, closingOdds, clv };
     setBets(updated);
+    if (bet.id) await dbUpdate(bet.id, { closingOdds, clv });
   };
 
   return (
     <div>
-      {clvTarget !== null && (
-        <CLVEntry
-          bet={bets[clvTarget]}
-          onSave={(co) => saveCLV(clvTarget, co)}
-          onClose={() => setCLVTarget(null)}
-          T={T}
-        />
-      )}
+      {clvTarget!==null&&<CLVEntry bet={bets[clvTarget]} onSave={(co)=>handleCLVSave(clvTarget,co)} onClose={()=>setCLVTarget(null)} T={T}/>}
       <ExposureWarning bets={bets} bankroll={bankroll} unitSize={unitSize} T={T}/>
+      {dbSyncing&&<div style={{marginBottom:8,padding:"4px 10px",background:T.goldBg,borderRadius:3,border:`1px solid ${T.gold}30`}}><span style={{color:T.gold,fontSize:9,fontFamily:F.mono}}>⟳ Syncing with cloud...</span></div>}
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:14}}>
-        {[{l:"NET UNITS",v:(stats.netUnits>=0?"+":"")+stats.netUnits.toFixed(2),s:bankroll>0?`${nd>=0?"+":""}$${nd.toFixed(0)}`:null,c:stats.netUnits>=0?T.green:T.red},{l:"ROI",v:`${stats.roi>=0?"+":""}${stats.roi.toFixed(1)}%`,c:stats.roi>=0?T.green:T.red},{l:"WIN RATE",v:`${stats.winRate.toFixed(1)}%`,s:`${stats.wins}W-${stats.losses}L-${stats.pushes}P`,c:T.text},{l:"AVG EDGE",v:`${stats.avgEdge.toFixed(1)}%`,s:`${stats.pending} pending`,c:T.gold}].map(s=>
-          <div key={s.l} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:"10px 12px"}}>
-            <div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:4}}>{s.l}</div>
-            <div style={{color:s.c,fontSize:18,fontWeight:700,fontFamily:F.mono}}>{s.v}</div>
-            {s.s&&<div style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginTop:2}}>{s.s}</div>}
-          </div>)}
+        {[{l:"NET UNITS",v:(stats.netUnits>=0?"+":"")+stats.netUnits.toFixed(2),s:bankroll>0?`${nd>=0?"+":""}$${nd.toFixed(0)}`:null,c:stats.netUnits>=0?T.green:T.red},{l:"ROI",v:`${stats.roi>=0?"+":""}${stats.roi.toFixed(1)}%`,c:stats.roi>=0?T.green:T.red},{l:"WIN RATE",v:`${stats.winRate.toFixed(1)}%`,s:`${stats.wins}W-${stats.losses}L-${stats.pushes}P`,c:T.text},{l:"AVG EDGE",v:`${stats.avgEdge.toFixed(1)}%`,s:`${stats.pending} pending`,c:T.gold}].map(s=><div key={s.l} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:"10px 12px"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:4}}>{s.l}</div><div style={{color:s.c,fontSize:18,fontWeight:700,fontFamily:F.mono}}>{s.v}</div>{s.s&&<div style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginTop:2}}>{s.s}</div>}</div>)}
       </div>
       {bets.length>0&&<><button onClick={()=>setShowBreakdown(!showBreakdown)} style={{width:"100%",padding:"8px",background:T.card,border:`1px solid ${T.border}`,borderRadius:4,color:showBreakdown?T.text:T.dim,fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:F.mono,marginBottom:10,textAlign:"center"}}>{showBreakdown?"▾ HIDE":"▸ SHOW"} SPORT BREAKDOWN</button>
-        {showBreakdown&&<div style={{marginBottom:14}}>
-          <div style={{display:"grid",gridTemplateColumns:"auto repeat(5,1fr)",gap:"4px 12px",fontSize:10,fontFamily:F.mono,padding:"6px 10px",background:T.card,borderRadius:4,border:`1px solid ${T.border}`}}>
-            <div style={{color:T.muted,fontWeight:600}}>SPORT</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>RECORD</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>NET U</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>ROI</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>WIN%</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>AVG EDGE</div>
-            {sportBreakdowns.map(s=><React.Fragment key={s.sport}><div style={{color:T.text,fontWeight:600}}>{s.sport}</div><div style={{textAlign:"right",color:T.dim}}>{s.wins}-{s.losses}-{s.pushes}</div><div style={{textAlign:"right",color:s.net>=0?T.green:T.red}}>{s.net>=0?"+":""}{s.net.toFixed(2)}</div><div style={{textAlign:"right",color:s.roi>=0?T.green:T.red}}>{s.roi>=0?"+":""}{s.roi.toFixed(1)}%</div><div style={{textAlign:"right",color:T.dim}}>{s.winRate.toFixed(1)}%</div><div style={{textAlign:"right",color:T.gold}}>{s.avgEdge.toFixed(1)}%</div></React.Fragment>)}
-          </div>
-        </div>}</>}
-
+        {showBreakdown&&<div style={{marginBottom:14}}><div style={{display:"grid",gridTemplateColumns:"auto repeat(5,1fr)",gap:"4px 12px",fontSize:10,fontFamily:F.mono,padding:"6px 10px",background:T.card,borderRadius:4,border:`1px solid ${T.border}`}}>
+          <div style={{color:T.muted,fontWeight:600}}>SPORT</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>RECORD</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>NET U</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>ROI</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>WIN%</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>AVG EDGE</div>
+          {sportBreakdowns.map(s=><React.Fragment key={s.sport}><div style={{color:T.text,fontWeight:600}}>{s.sport}</div><div style={{textAlign:"right",color:T.dim}}>{s.wins}-{s.losses}-{s.pushes}</div><div style={{textAlign:"right",color:s.net>=0?T.green:T.red}}>{s.net>=0?"+":""}{s.net.toFixed(2)}</div><div style={{textAlign:"right",color:s.roi>=0?T.green:T.red}}>{s.roi>=0?"+":""}{s.roi.toFixed(1)}%</div><div style={{textAlign:"right",color:T.dim}}>{s.winRate.toFixed(1)}%</div><div style={{textAlign:"right",color:T.gold}}>{s.avgEdge.toFixed(1)}%</div></React.Fragment>)}
+        </div></div>}</>}
       {bets.length===0?<div style={{textAlign:"center",padding:"40px 20px",color:T.muted}}><div style={{fontSize:24,marginBottom:8,opacity:0.4}}>📋</div><div style={{fontSize:13}}>No bets tracked yet</div></div>:
-        bets.map((bet,i)=>
-          <div key={i} style={{background:T.card,border:`1px solid ${bet.result==="W"?`${T.green}22`:bet.result==="L"?`${T.red}22`:T.border}`,borderRadius:6,padding:"10px 14px",marginBottom:3}}>
+        bets.map((bet,i)=>(
+          <div key={bet.id||i} style={{background:T.card,border:`1px solid ${bet.result==="W"?`${T.green}22`:bet.result==="L"?`${T.red}22`:T.border}`,borderRadius:6,padding:"10px 14px",marginBottom:3}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <div style={{flex:1}}>
-                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
-                  <span style={{fontSize:8,padding:"1px 4px",borderRadius:2,background:`${T.muted}15`,color:T.muted,fontFamily:F.mono,fontWeight:600}}>{bet.sport}</span>
-                  <span style={{color:T.text,fontSize:12,fontWeight:600}}>{bet.game}</span>
-                </div>
-                <div style={{color:T.dim,fontSize:10,fontFamily:F.mono}}>
-                  {bet.type} {bet.line} ({bet.odds}) · {bet.book} · {bet.units}u{bankroll>0&&<> · <span style={{color:T.gold}}>${(bet.units*unitSize).toFixed(0)}</span></>} · edge {bet.edge.toFixed(1)}%
-                </div>
-                {/* CLV display */}
-                {bet.clv !== null && bet.clv !== undefined ? (
-                  <div style={{marginTop:3,display:"flex",alignItems:"center",gap:6}}>
-                    <span style={{fontSize:9,fontFamily:F.mono,color:T.muted}}>CLV:</span>
-                    <span style={{fontSize:10,fontWeight:700,fontFamily:F.mono,color:bet.clv>=0?T.green:T.red}}>
-                      {bet.clv>=0?"+":""}{bet.clv.toFixed(2)}%
-                    </span>
-                    <span style={{fontSize:9,fontFamily:F.mono,color:T.muted}}>
-                      {bet.clv>=0?"(beat the close)":"(line moved against you)"}
-                    </span>
-                    <span style={{fontSize:8,fontFamily:F.mono,color:T.muted}}>
-                      entry {bet.entryOdds||bet.odds} → close {bet.closingOdds}
-                    </span>
-                  </div>
-                ) : (
-                  <button
-                    onClick={()=>setCLVTarget(i)}
-                    style={{marginTop:4,padding:"2px 8px",borderRadius:2,border:`1px solid ${T.border}`,background:"transparent",color:T.muted,fontSize:8,fontWeight:600,cursor:"pointer",fontFamily:F.mono}}
-                  >+ Enter Closing Line</button>
-                )}
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}><span style={{fontSize:8,padding:"1px 4px",borderRadius:2,background:`${T.muted}15`,color:T.muted,fontFamily:F.mono,fontWeight:600}}>{bet.sport}</span><span style={{color:T.text,fontSize:12,fontWeight:600}}>{bet.game}</span></div>
+                <div style={{color:T.dim,fontSize:10,fontFamily:F.mono}}>{bet.type} {bet.line} ({bet.odds}) · {bet.book} · {bet.units}u{bankroll>0&&<> · <span style={{color:T.gold}}>${(bet.units*unitSize).toFixed(0)}</span></>} · edge {bet.edge.toFixed(1)}%</div>
+                {bet.clv!==null&&bet.clv!==undefined?(<div style={{marginTop:3,display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:9,fontFamily:F.mono,color:T.muted}}>CLV:</span><span style={{fontSize:10,fontWeight:700,fontFamily:F.mono,color:bet.clv>=0?T.green:T.red}}>{bet.clv>=0?"+":""}{bet.clv.toFixed(2)}%</span><span style={{fontSize:9,fontFamily:F.mono,color:T.muted}}>{bet.clv>=0?"(beat the close)":"(missed)"}</span><span style={{fontSize:8,fontFamily:F.mono,color:T.muted}}>entry {bet.entryOdds||bet.odds} → close {bet.closingOdds}</span></div>):(<button onClick={()=>setCLVTarget(i)} style={{marginTop:4,padding:"2px 8px",borderRadius:2,border:`1px solid ${T.border}`,background:"transparent",color:T.muted,fontSize:8,fontWeight:600,cursor:"pointer",fontFamily:F.mono}}>+ Enter Closing Line</button>)}
               </div>
               <div style={{display:"flex",gap:3,alignItems:"center"}}>
                 {bet.result?<span style={{padding:"2px 10px",borderRadius:3,fontSize:11,fontWeight:800,fontFamily:F.mono,color:bet.result==="W"?T.green:bet.result==="L"?T.red:T.muted,background:bet.result==="W"?T.greenBg:bet.result==="L"?T.redBg:`${T.muted}15`}}>{bet.result==="W"?"WIN":bet.result==="L"?"LOSS":"PUSH"}</span>:
-                  ["W","L","P"].map(r=><button key={r} onClick={()=>{const u=[...bets];u[i]={...u[i],result:r};setBets(u);}} style={{width:26,height:26,borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:r==="W"?T.green:r==="L"?T.red:T.muted,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>{r}</button>)}
-                <button onClick={()=>setBets(bets.filter((_,j)=>j!==i))} style={{width:26,height:26,borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.muted,fontSize:12,cursor:"pointer"}}>×</button>
+                  ["W","L","P"].map(r=><button key={r} onClick={()=>handleResult(i,r)} style={{width:26,height:26,borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:r==="W"?T.green:r==="L"?T.red:T.muted,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>{r}</button>)}
+                <button onClick={()=>handleDelete(i)} style={{width:26,height:26,borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.muted,fontSize:12,cursor:"pointer"}}>×</button>
               </div>
             </div>
-          </div>)}
+          </div>
+        ))}
     </div>
   );
 }
 
 function ManualBetForm({onAddBet,onClose,T}){
   const [f,setF]=useState({sport:"NBA",game:"",type:"Spread",line:"",odds:"-110",book:"DraftKings",edge:"",units:"1"});
-  const is={width:"100%",padding:"7px 9px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:4,color:T.text,fontSize:12,fontFamily:F.body,outline:"none",boxSizing:"border-box"};
+  const is={width:"100%",padding:"7px 9px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:4,color:T.text,fontSize:12,fontFamily:F.body,outline:"none"};
   const ls={color:T.muted,fontSize:8,fontWeight:600,fontFamily:F.mono,letterSpacing:0.8,marginBottom:2,display:"block"};
   return (
     <div style={{background:T.card,border:`1px solid ${T.borderHi}`,borderRadius:6,padding:14,marginBottom:10}}>
@@ -715,8 +568,7 @@ function ManualBetForm({onAddBet,onClose,T}){
         <div><label style={ls}>EDGE %</label><input placeholder="3.5" value={f.edge} onChange={e=>setF({...f,edge:e.target.value})} style={is}/></div>
         <div><label style={ls}>UNITS</label><input placeholder="1" value={f.units} onChange={e=>setF({...f,units:e.target.value})} style={is}/></div>
       </div>
-      <button onClick={()=>{if(f.game&&f.line){onAddBet({sport:f.sport,game:f.game,type:f.type,line:f.line,odds:parseInt(f.odds)||-110,book:f.book,edge:parseFloat(f.edge)||0,units:parseFloat(f.units)||1,entryOdds:parseInt(f.odds)||-110});onClose();}}}
-        style={{width:"100%",marginTop:10,padding:9,background:T.green,color:T.bg,border:"none",borderRadius:4,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>LOG BET</button>
+      <button onClick={()=>{if(f.game&&f.line){onAddBet({sport:f.sport,game:f.game,type:f.type,line:f.line,odds:parseInt(f.odds)||-110,book:f.book,edge:parseFloat(f.edge)||0,units:parseFloat(f.units)||1,entryOdds:parseInt(f.odds)||-110});onClose();}}} style={{width:"100%",marginTop:10,padding:9,background:T.green,color:T.bg,border:"none",borderRadius:4,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>LOG BET</button>
     </div>
   );
 }
@@ -726,8 +578,7 @@ function BankrollPanel({bankroll,setBankroll,unitSize,T}){
   return (
     <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:"12px 14px",marginBottom:10}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div>
-          <div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:3}}>BANKROLL</div>
+        <div><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:3}}>BANKROLL</div>
           {editing?<div style={{display:"flex",gap:4,alignItems:"center"}}><span style={{color:T.dim,fontSize:16,fontFamily:F.mono}}>$</span><input autoFocus value={input} onChange={e=>setInput(e.target.value.replace(/[^0-9]/g,""))} onKeyDown={e=>{if(e.key==="Enter"){setBankroll(parseInt(input)||0);setEditing(false);}}} style={{width:120,padding:"5px 7px",background:T.bg,border:`1px solid ${T.green}`,borderRadius:3,color:T.text,fontSize:18,fontWeight:700,fontFamily:F.mono,outline:"none"}}/><button onClick={()=>{setBankroll(parseInt(input)||0);setEditing(false);}} style={{padding:"5px 10px",background:T.green,color:T.bg,border:"none",borderRadius:3,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>SET</button></div>:
           <div onClick={()=>{setInput(bankroll.toString());setEditing(true);}} style={{cursor:"pointer",display:"flex",alignItems:"baseline",gap:6}}><span style={{color:T.text,fontSize:22,fontWeight:700,fontFamily:F.mono}}>${bankroll>0?bankroll.toLocaleString():"—"}</span><span style={{color:T.muted,fontSize:10,fontFamily:F.mono}}>{bankroll>0?"edit":"set amount"}</span></div>}
         </div>
@@ -737,96 +588,39 @@ function BankrollPanel({bankroll,setBankroll,unitSize,T}){
   );
 }
 
-// ─── CLV TAB ───
-function CLVTab({bets, setBets, T}){
-  const [clvTarget, setCLVTarget] = useState(null);
+function CLVTab({bets,setBets,T}){
+  const [clvTarget,setCLVTarget]=useState(null);
+  const clvStats=useMemo(()=>{const wc=bets.filter(b=>b.clv!==null&&b.clv!==undefined);if(wc.length===0)return{avg:0,beatPct:0,total:0,positive:0};const pos=wc.filter(b=>b.clv>0);return{avg:wc.reduce((s,b)=>s+b.clv,0)/wc.length,beatPct:pos.length/wc.length*100,total:wc.length,positive:pos.length};},[bets]);
+  const pendingCLV=bets.filter(b=>b.clv===null||b.clv===undefined);
 
-  const clvStats=useMemo(()=>{
-    const wc=bets.filter(b=>b.clv!==null&&b.clv!==undefined);
-    if(wc.length===0) return {avg:0,beatPct:0,total:0,positive:0};
-    const pos=wc.filter(b=>b.clv>0);
-    return {avg:wc.reduce((s,b)=>s+b.clv,0)/wc.length, beatPct:(pos.length/wc.length)*100, total:wc.length, positive:pos.length};
-  },[bets]);
-
-  const pendingCLV = bets.filter(b => b.clv === null || b.clv === undefined);
-
-  const saveCLV = (idx, closingOdds) => {
-    const updated = [...bets];
-    const bet = updated[idx];
-    const clv = calcCLV(bet.entryOdds || bet.odds, closingOdds);
-    updated[idx] = { ...bet, closingOdds, clv };
+  const handleCLVSave = async (idx, closingOdds) => {
+    const updated=[...bets];
+    const bet=updated[idx];
+    const clv=calcCLV(bet.entryOdds||bet.odds,closingOdds);
+    updated[idx]={...bet,closingOdds,clv};
     setBets(updated);
+    if(bet.id) await dbUpdate(bet.id,{closingOdds,clv});
   };
 
   return (
     <div>
-      {clvTarget !== null && (
-        <CLVEntry
-          bet={bets[clvTarget]}
-          onSave={(co) => saveCLV(clvTarget, co)}
-          onClose={() => setCLVTarget(null)}
-          T={T}
-        />
-      )}
+      {clvTarget!==null&&<CLVEntry bet={bets[clvTarget]} onSave={(co)=>handleCLVSave(clvTarget,co)} onClose={()=>setCLVTarget(null)} T={T}/>}
       <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:14}}>
-        {[
-          {l:"AVG CLV",v:clvStats.total>0?`${clvStats.avg>=0?"+":""}${clvStats.avg.toFixed(2)}%`:"—",c:clvStats.total>0?(clvStats.avg>=0?T.green:T.red):T.muted,s:`${clvStats.total} tracked`},
-          {l:"BEAT THE CLOSE",v:clvStats.total>0?`${clvStats.beatPct.toFixed(1)}%`:"—",c:clvStats.total>0?(clvStats.beatPct>=55?T.green:T.gold):T.muted,s:clvStats.total>0?`${clvStats.positive}/${clvStats.total} bets`:""},
-          {l:"AWAITING CLOSE",v:`${pendingCLV.length}`,c:pendingCLV.length>0?T.gold:T.muted,s:"click to enter"}
-        ].map(s=>
-          <div key={s.l} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:"10px 12px"}}>
-            <div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:4}}>{s.l}</div>
-            <div style={{color:s.c,fontSize:20,fontWeight:700,fontFamily:F.mono}}>{s.v}</div>
-            {s.s&&<div style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginTop:2}}>{s.s}</div>}
-          </div>)}
+        {[{l:"AVG CLV",v:clvStats.total>0?`${clvStats.avg>=0?"+":""}${clvStats.avg.toFixed(2)}%`:"—",c:clvStats.total>0?(clvStats.avg>=0?T.green:T.red):T.muted,s:`${clvStats.total} tracked`},{l:"BEAT THE CLOSE",v:clvStats.total>0?`${clvStats.beatPct.toFixed(1)}%`:"—",c:clvStats.total>0?(clvStats.beatPct>=55?T.green:T.gold):T.muted,s:clvStats.total>0?`${clvStats.positive}/${clvStats.total} bets`:""},{l:"AWAITING CLOSE",v:`${pendingCLV.length}`,c:pendingCLV.length>0?T.gold:T.muted,s:"click to enter"}].map(s=><div key={s.l} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:"10px 12px"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:4}}>{s.l}</div><div style={{color:s.c,fontSize:20,fontWeight:700,fontFamily:F.mono}}>{s.v}</div>{s.s&&<div style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginTop:2}}>{s.s}</div>}</div>)}
       </div>
       <div style={{padding:"10px 12px",background:T.goldBg,borderRadius:4,borderLeft:`2px solid ${T.gold}`,marginBottom:14}}>
         <div style={{color:T.gold,fontSize:10,fontWeight:700,fontFamily:F.mono,marginBottom:3}}>WHY CLV IS THE METRIC THAT MATTERS</div>
-        <div style={{color:T.dim,fontSize:10,lineHeight:1.7}}>Win rate lies. CLV doesn't. Consistently beating the closing line means you're finding value before the market does — the definition of sharp betting. After a game closes, enter the closing odds below to track your line-shopping skill over time. A 55%+ "beat the close" rate is a strong signal of genuine edge.</div>
+        <div style={{color:T.dim,fontSize:10,lineHeight:1.7}}>Win rate lies. CLV doesn't. Consistently beating the closing line means you're finding value before the market does — the definition of sharp betting. After a game closes, enter the closing odds to track your edge over time. A 55%+ beat rate signals genuine skill.</div>
       </div>
-
-      {/* Pending CLV entries */}
-      {pendingCLV.length > 0 && (
-        <div style={{marginBottom:14}}>
-          <div style={{color:T.muted,fontSize:9,fontWeight:700,fontFamily:F.mono,letterSpacing:1,marginBottom:8}}>AWAITING CLOSING LINE</div>
-          {pendingCLV.map((bet) => {
-            const idx = bets.indexOf(bet);
-            return (
-              <div key={idx} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:4,padding:"8px 12px",marginBottom:4,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div>
-                  <div style={{color:T.text,fontSize:11,fontWeight:600}}>{bet.game}</div>
-                  <div style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>{bet.type} {bet.line} · entry odds: {bet.entryOdds||bet.odds} · {bet.book}</div>
-                </div>
-                <button
-                  onClick={()=>setCLVTarget(idx)}
-                  style={{padding:"4px 12px",borderRadius:3,border:`1px solid ${T.gold}40`,background:T.goldBg,color:T.gold,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono,whiteSpace:"nowrap"}}
-                >Enter Close →</button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Completed CLV entries */}
-      {bets.filter(b=>b.clv!==null&&b.clv!==undefined).length > 0 && (
-        <div>
-          <div style={{color:T.muted,fontSize:9,fontWeight:700,fontFamily:F.mono,letterSpacing:1,marginBottom:8}}>CLV HISTORY</div>
-          {bets.filter(b=>b.clv!==null&&b.clv!==undefined).map((b,i)=>(
-            <div key={i} style={{background:T.card,border:`1px solid ${b.clv>=0?`${T.green}15`:`${T.red}15`}`,borderRadius:4,padding:"8px 12px",marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <div>
-                <div style={{color:T.text,fontSize:11,fontWeight:600}}>{b.game}</div>
-                <div style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>{b.type} {b.line} · {b.book} · Entry: {b.entryOdds||b.odds} → Close: {b.closingOdds}</div>
-              </div>
-              <div style={{textAlign:"right"}}>
-                <div style={{color:b.clv>=0?T.green:T.red,fontSize:14,fontWeight:800,fontFamily:F.mono}}>{b.clv>=0?"+":""}{b.clv.toFixed(2)}%</div>
-                <div style={{color:T.muted,fontSize:8,fontFamily:F.mono}}>{b.clv>=0?"BEAT CLOSE":"MISSED"}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {bets.length===0&&<div style={{textAlign:"center",padding:"40px 20px",color:T.muted}}><div style={{fontSize:24,marginBottom:8,opacity:0.4}}>📈</div><div style={{fontSize:13}}>Log bets in the Tracker tab, then enter closing lines here to measure your CLV</div></div>}
+      {pendingCLV.length>0&&<div style={{marginBottom:14}}>
+        <div style={{color:T.muted,fontSize:9,fontWeight:700,fontFamily:F.mono,letterSpacing:1,marginBottom:8}}>AWAITING CLOSING LINE</div>
+        {pendingCLV.map(bet=>{const idx=bets.indexOf(bet);return(<div key={idx} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:4,padding:"8px 12px",marginBottom:4,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{color:T.text,fontSize:11,fontWeight:600}}>{bet.game}</div><div style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>{bet.type} {bet.line} · entry: {bet.entryOdds||bet.odds} · {bet.book}</div></div><button onClick={()=>setCLVTarget(idx)} style={{padding:"4px 12px",borderRadius:3,border:`1px solid ${T.gold}40`,background:T.goldBg,color:T.gold,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono,whiteSpace:"nowrap"}}>Enter Close →</button></div>);})}
+      </div>}
+      {bets.filter(b=>b.clv!==null&&b.clv!==undefined).length>0&&<div>
+        <div style={{color:T.muted,fontSize:9,fontWeight:700,fontFamily:F.mono,letterSpacing:1,marginBottom:8}}>CLV HISTORY</div>
+        {bets.filter(b=>b.clv!==null&&b.clv!==undefined).map((b,i)=>(<div key={i} style={{background:T.card,border:`1px solid ${b.clv>=0?`${T.green}15`:`${T.red}15`}`,borderRadius:4,padding:"8px 12px",marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{color:T.text,fontSize:11,fontWeight:600}}>{b.game}</div><div style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>{b.type} {b.line} · {b.book} · Entry: {b.entryOdds||b.odds} → Close: {b.closingOdds}</div></div><div style={{textAlign:"right"}}><div style={{color:b.clv>=0?T.green:T.red,fontSize:14,fontWeight:800,fontFamily:F.mono}}>{b.clv>=0?"+":""}{b.clv.toFixed(2)}%</div><div style={{color:T.muted,fontSize:8,fontFamily:F.mono}}>{b.clv>=0?"BEAT CLOSE":"MISSED"}</div></div></div>))}
+      </div>}
+      {bets.length===0&&<div style={{textAlign:"center",padding:"40px 20px",color:T.muted}}><div style={{fontSize:24,marginBottom:8,opacity:0.4}}>📈</div><div style={{fontSize:13}}>Log bets in the Tracker tab, then enter closing lines here</div></div>}
     </div>
   );
 }
@@ -835,17 +629,7 @@ function AlertBanner({alerts,T}){
   const [dismissed,setDismissed]=useState(false);
   if(dismissed||alerts.length===0) return null;
   const top=alerts[0];
-  return (
-    <div style={{padding:"8px 14px",background:T.greenBg,borderBottom:`1px solid ${T.green}22`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-        <span style={{color:T.green,fontSize:10,fontWeight:700,fontFamily:F.mono}}>▲ EDGE DETECTED</span>
-        <span style={{color:T.text,fontSize:11}}>{top.away} @ {top.home}</span>
-        <span style={{color:T.dim,fontSize:10,fontFamily:F.mono}}>{top.type} · {top.edge.toFixed(1)}% at {top.book}</span>
-        {alerts.length>1&&<span style={{color:T.muted,fontSize:10,fontFamily:F.mono}}>+{alerts.length-1} more</span>}
-      </div>
-      <button onClick={()=>setDismissed(true)} style={{background:"none",border:"none",color:T.muted,fontSize:14,cursor:"pointer",flexShrink:0}}>×</button>
-    </div>
-  );
+  return <div style={{padding:"8px 14px",background:T.greenBg,borderBottom:`1px solid ${T.green}22`,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}><span style={{color:T.green,fontSize:10,fontWeight:700,fontFamily:F.mono}}>▲ EDGE DETECTED</span><span style={{color:T.text,fontSize:11}}>{top.away} @ {top.home}</span><span style={{color:T.dim,fontSize:10,fontFamily:F.mono}}>{top.type} · {top.edge.toFixed(1)}% at {top.book}</span>{alerts.length>1&&<span style={{color:T.muted,fontSize:10,fontFamily:F.mono}}>+{alerts.length-1} more</span>}</div><button onClick={()=>setDismissed(true)} style={{background:"none",border:"none",color:T.muted,fontSize:14,cursor:"pointer"}}>×</button></div>;
 }
 
 // ─── MAIN APP ───
@@ -854,7 +638,7 @@ function SharpLine(){
   const [activeTab,setActiveTab]=useState("scanner");
   const [bets,setBets]=useState([]);
   const [games,setGames]=useState({});
-  const [lineHistory,setLineHistory]=useState({}); // gameId -> {bookName -> {spread, total}} — first-seen lines for movement tracking
+  const [lineHistory,setLineHistory]=useState({});
   const [showManualBet,setShowManualBet]=useState(false);
   const [bookFilter,setBookFilter]=useState("ALL");
   const [bankroll,setBankroll]=useState(0);
@@ -866,152 +650,100 @@ function SharpLine(){
   const [apiCredits,setApiCredits]=useState(null);
   const [errors,setErrors]=useState({});
   const [lastFetch,setLastFetch]=useState({});
+  const [dbSyncing,setDbSyncing]=useState(false);
+  const [dbError,setDbError]=useState(null);
 
   const T=dark?themes.dark:themes.light;
   const unitSize=Math.round(bankroll*0.01);
 
-  // Load persisted data on mount
+  // Load settings from localStorage, bets from Supabase
   useEffect(()=>{
-    const sb=ld(SK.bets,[]),sba=ld(SK.bankroll,0),st=ld(SK.theme,true),smb=ld(SK.myBooks,DEFAULT_MY_BOOKS);
-    setBets(sb); setBankroll(sba); setDark(st); setMyBooks(smb); setLoaded(true);
+    setBankroll(ld(SK.bankroll,0));
+    setDark(ld(SK.theme,true));
+    setMyBooks(ld(SK.myBooks,DEFAULT_MY_BOOKS));
+    setDbSyncing(true);
+    dbLoad().then(data=>{
+      setBets(data);
+      setDbSyncing(false);
+      setLoaded(true);
+    }).catch(e=>{
+      setDbError("Could not connect to cloud. Bets may not sync.");
+      setDbSyncing(false);
+      setLoaded(true);
+    });
+    fetchSport("NBA");
   },[]);
 
-  // Persist on change
-  useEffect(()=>{if(loaded)sv(SK.bets,bets);},[bets,loaded]);
   useEffect(()=>{if(loaded)sv(SK.bankroll,bankroll);},[bankroll,loaded]);
   useEffect(()=>{if(loaded)sv(SK.theme,dark);},[dark,loaded]);
   useEffect(()=>{if(loaded)sv(SK.myBooks,myBooks);},[myBooks,loaded]);
 
-  // ── FETCH SPORT ──
-  // Manual-only: only called when user clicks Refresh.
-  // No auto-fetch on mount or sport switch = ZERO wasted credits.
-  // Cache persists in-memory until manual refresh.
-  const fetchSport = useCallback(async (sportKey) => {
-    const sport = SPORTS.find(s => s.key === sportKey);
-    if (!sport) return;
-    setLoading(prev => ({ ...prev, [sportKey]: true }));
-    setErrors(prev => ({ ...prev, [sportKey]: null }));
-    const result = await fetchOdds(sport.api);
-    if (result.remaining !== null) setApiCredits(result.remaining);
-    if (result.error) {
-      setErrors(prev => ({ ...prev, [sportKey]: result.error }));
-      setLoading(prev => ({ ...prev, [sportKey]: false }));
-      return;
-    }
-    let parsed;
-    if (result.mock) {
-      parsed = getMockGames(sportKey);
-    } else {
-      parsed = parseApiGames(result.games, sportKey);
-    }
-    setGames(prev => ({ ...prev, [sportKey]: parsed }));
-    // Record first-seen lines for movement tracking (only if not already set)
-    setLineHistory(prev => {
-      const updated = { ...prev };
-      parsed.forEach(g => {
-        if (!updated[g.id]) {
-          updated[g.id] = {};
-          g.bookLines.forEach(bl => {
-            updated[g.id][bl.book] = { spread: bl.spread, total: bl.total };
-          });
-        }
-      });
+  const fetchSport=useCallback(async(sportKey)=>{
+    const sport=SPORTS.find(s=>s.key===sportKey);
+    if(!sport) return;
+    setLoading(prev=>({...prev,[sportKey]:true}));
+    setErrors(prev=>({...prev,[sportKey]:null}));
+    const result=await fetchOdds(sport.api);
+    if(result.remaining!==null) setApiCredits(result.remaining);
+    if(result.error){setErrors(prev=>({...prev,[sportKey]:result.error}));setLoading(prev=>({...prev,[sportKey]:false}));return;}
+    const parsed=result.mock?getMockGames(sportKey):parseApiGames(result.games);
+    setGames(prev=>({...prev,[sportKey]:parsed}));
+    setLineHistory(prev=>{
+      const updated={...prev};
+      parsed.forEach(g=>{if(!updated[g.id]){updated[g.id]={};g.bookLines.forEach(bl=>{updated[g.id][bl.book]={spread:bl.spread,total:bl.total};});}});
       return updated;
     });
-    setLastFetch(prev => ({ ...prev, [sportKey]: new Date() }));
-    setLoading(prev => ({ ...prev, [sportKey]: false }));
-  }, []);
+    setLastFetch(prev=>({...prev,[sportKey]:new Date()}));
+    setLoading(prev=>({...prev,[sportKey]:false}));
+  },[]);
 
-  // Load the default sport on first visit only (mock data, no API call)
-  useEffect(() => {
-    fetchSport("NBA");
-  }, []); // eslint-disable-line
+  const currentGames=useMemo(()=>(games[activeSport]||[]).sort((a,b)=>a.time-b.time),[games,activeSport]);
+  const dayGroups=useMemo(()=>{const groups={};currentGames.forEach(g=>{if(!groups[g.dayKey])groups[g.dayKey]={label:g.dayLabel,games:[]};groups[g.dayKey].games.push(g);});return Object.entries(groups).sort((a,b)=>a[0].localeCompare(b[0]));},[currentGames]);
+  const alerts=useMemo(()=>{const all=[];Object.entries(games).forEach(([sk,gs])=>{gs.forEach(g=>{g.edges.filter(e=>myBooks.includes(e.book)).forEach(e=>{if(e.spreadEdge>=5)all.push({away:g.away,home:g.home,type:"Spread",edge:e.spreadEdge,book:e.book});if(e.totalEdge>=5)all.push({away:g.away,home:g.home,type:"Total",edge:e.totalEdge,book:e.book});});});});return all.sort((a,b)=>b.edge-a.edge).slice(0,20);},[games,myBooks]);
 
-  const currentGames = useMemo(() => {
-    return (games[activeSport] || []).sort((a, b) => a.time - b.time);
-  }, [games, activeSport]);
-
-  const dayGroups = useMemo(() => {
-    const groups = {};
-    currentGames.forEach(g => {
-      if (!groups[g.dayKey]) groups[g.dayKey] = { label: g.dayLabel, games: [] };
-      groups[g.dayKey].games.push(g);
-    });
-    return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [currentGames]);
-
-  const alerts = useMemo(() => {
-    const all = [];
-    Object.entries(games).forEach(([sk, gs]) => {
-      gs.forEach(g => {
-        g.edges.filter(e => myBooks.includes(e.book)).forEach(e => {
-          if (e.spreadEdge >= 5) all.push({ away: g.away, home: g.home, type: "Spread", edge: e.spreadEdge, book: e.book, sport: sk });
-          if (e.totalEdge >= 5) all.push({ away: g.away, home: g.home, type: "Total", edge: e.totalEdge, book: e.book, sport: sk });
-        });
-      });
-    });
-    return all.sort((a, b) => b.edge - a.edge).slice(0, 20);
-  }, [games, myBooks]);
-
-  const addBet = bet => {
-    setBets(prev => [...prev, { ...bet, timestamp: new Date().toISOString(), entryOdds: bet.entryOdds || bet.odds, closingOdds: null, clv: null }]);
+  const addBet=async(bet)=>{
+    const newBet={...bet,timestamp:new Date().toISOString(),entryOdds:bet.entryOdds||bet.odds,closingOdds:null,clv:null};
+    const id=await dbAdd(newBet);
+    setBets(prev=>[{...newBet,id},...prev]);
     setActiveTab("tracker");
   };
 
-  const isMock = API_DISCONNECTED;
+  const isMock=API_DISCONNECTED;
+  const pendingCLVCount=bets.filter(b=>b.clv===null||b.clv===undefined).length;
 
   return (
-    <div style={{minHeight:"100vh",background:T.bg,color:T.text,fontFamily:F.body,transition:"background 0.2s, color 0.2s"}}>
+    <div style={{minHeight:"100vh",background:T.bg,color:T.text,fontFamily:F.body,transition:"background 0.2s,color 0.2s"}}>
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
-      <style>{`*{box-sizing:border-box;margin:0;padding:0} select option{background:${T.card};color:${T.text}} ::-webkit-scrollbar{height:3px} ::-webkit-scrollbar-thumb{background:${T.border};border-radius:2px} @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}} @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
-
+      <style>{`*{box-sizing:border-box;margin:0;padding:0} select option{background:${T.card};color:${T.text}} ::-webkit-scrollbar{height:3px} ::-webkit-scrollbar-thumb{background:${T.border};border-radius:2px} @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
       <AlertBanner alerts={alerts} T={T}/>
+      {isMock&&<div style={{padding:"6px 18px",background:`${T.gold}12`,borderBottom:`1px solid ${T.gold}25`,display:"flex",alignItems:"center",gap:8}}><span style={{color:T.gold,fontSize:9,fontWeight:800,fontFamily:F.mono,letterSpacing:1}}>⚙ DEV MODE</span><span style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>API disconnected · mock data · set API_DISCONNECTED = false to go live</span></div>}
+      {dbError&&<div style={{padding:"6px 18px",background:T.redBg,borderBottom:`1px solid ${T.red}22`,display:"flex",alignItems:"center",gap:8}}><span style={{color:T.red,fontSize:9,fontFamily:F.mono}}>⚠ {dbError}</span></div>}
 
-      {/* API Disconnected Banner */}
-      {isMock && (
-        <div style={{padding:"6px 18px",background:`${T.gold}12`,borderBottom:`1px solid ${T.gold}25`,display:"flex",alignItems:"center",gap:8}}>
-          <span style={{color:T.gold,fontSize:9,fontWeight:800,fontFamily:F.mono,letterSpacing:1}}>⚙ DEV MODE</span>
-          <span style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>API disconnected · showing mock data · set API_DISCONNECTED = false to go live</span>
-        </div>
-      )}
-
-      {/* Header */}
       <div style={{borderBottom:`1px solid ${T.border}`,padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",background:T.card}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:28,height:28,borderRadius:4,background:`linear-gradient(135deg,${T.gold},${T.goldDim})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:900,color:dark?"#0d1117":"#fff",fontFamily:F.mono,letterSpacing:-1}}>SL</div>
-          <div>
-            <div style={{fontSize:14,fontWeight:800,letterSpacing:"-0.3px"}}>SHARPLINE</div>
-            <div style={{fontSize:8,fontFamily:F.mono,color:T.muted,letterSpacing:2}}>STOP GAMBLING. START INVESTING.</div>
-          </div>
+          <div><div style={{fontSize:14,fontWeight:800,letterSpacing:"-0.3px"}}>SHARPLINE</div><div style={{fontSize:8,fontFamily:F.mono,color:T.muted,letterSpacing:2}}>STOP GAMBLING. START INVESTING.</div></div>
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center"}}>
-          {!isMock && apiCredits!==null&&<span style={{fontSize:9,fontFamily:F.mono,color:apiCredits<50?T.red:apiCredits<200?T.gold:T.muted,padding:"4px 8px",borderRadius:3,border:`1px solid ${T.border}`,background:T.card}}>{apiCredits} credits</span>}
+          {dbSyncing&&<span style={{fontSize:9,fontFamily:F.mono,color:T.gold}}>⟳ syncing</span>}
+          {!isMock&&apiCredits!==null&&<span style={{fontSize:9,fontFamily:F.mono,color:apiCredits<50?T.red:apiCredits<200?T.gold:T.muted,padding:"4px 8px",borderRadius:3,border:`1px solid ${T.border}`}}>{apiCredits} credits</span>}
           <button onClick={()=>setShowBookSettings(!showBookSettings)} style={{background:showBookSettings?T.goldBg:"transparent",border:`1px solid ${showBookSettings?`${T.gold}40`:T.border}`,color:showBookSettings?T.gold:T.toggle,padding:"6px 10px",borderRadius:4,fontSize:12,cursor:"pointer"}}>⚙️</button>
           <button onClick={()=>setDark(!dark)} style={{background:"transparent",border:`1px solid ${T.border}`,color:T.toggle,padding:"6px 10px",borderRadius:4,fontSize:12,cursor:"pointer"}}>{dark?"☀️":"🌙"}</button>
         </div>
       </div>
 
-      {/* Book Settings */}
       {showBookSettings&&<div style={{borderBottom:`1px solid ${T.border}`,padding:"12px 18px",background:T.card}}>
         <div style={{maxWidth:900,margin:"0 auto"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-            <div style={{color:T.text,fontSize:12,fontWeight:700}}>My Sportsbooks ({myBooks.length})</div>
-            <div style={{display:"flex",gap:4}}><button onClick={()=>setMyBooks([...ALL_BOOKS])} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.dim,fontSize:9,fontFamily:F.mono,cursor:"pointer"}}>All</button><button onClick={()=>setMyBooks(DEFAULT_MY_BOOKS)} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.dim,fontSize:9,fontFamily:F.mono,cursor:"pointer"}}>Reset</button></div>
-          </div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-            {ALL_BOOKS.map(b=>{const active=myBooks.includes(b);return <button key={b} onClick={()=>{if(active&&myBooks.length>1)setMyBooks(myBooks.filter(x=>x!==b));else if(!active)setMyBooks([...myBooks,b]);}} style={{padding:"5px 10px",borderRadius:4,border:`1px solid ${active?`${T.green}40`:T.border}`,background:active?T.greenBg:"transparent",color:active?T.green:T.muted,fontSize:10,fontWeight:600,cursor:"pointer",transition:"all 0.15s"}}>{active&&"✓ "}{b}</button>;})}
-          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}><div style={{color:T.text,fontSize:12,fontWeight:700}}>My Sportsbooks ({myBooks.length})</div><div style={{display:"flex",gap:4}}><button onClick={()=>setMyBooks([...ALL_BOOKS])} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.dim,fontSize:9,fontFamily:F.mono,cursor:"pointer"}}>All</button><button onClick={()=>setMyBooks(DEFAULT_MY_BOOKS)} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.dim,fontSize:9,fontFamily:F.mono,cursor:"pointer"}}>Reset</button></div></div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>{ALL_BOOKS.map(b=>{const active=myBooks.includes(b);return <button key={b} onClick={()=>{if(active&&myBooks.length>1)setMyBooks(myBooks.filter(x=>x!==b));else if(!active)setMyBooks([...myBooks,b]);}} style={{padding:"5px 10px",borderRadius:4,border:`1px solid ${active?`${T.green}40`:T.border}`,background:active?T.greenBg:"transparent",color:active?T.green:T.muted,fontSize:10,fontWeight:600,cursor:"pointer"}}>{active&&"✓ "}{b}</button>;})}</div>
         </div>
       </div>}
 
       <div style={{maxWidth:900,margin:"0 auto",padding:"14px 14px"}}>
-        {/* Tabs */}
         <div style={{display:"flex",marginBottom:12,background:T.card,borderRadius:4,padding:2,border:`1px solid ${T.border}`}}>
-          {[{k:"scanner",l:"Scanner"},{k:"tracker",l:`Tracker (${bets.length})`},{k:"clv",l:`CLV${bets.filter(b=>b.clv===null||b.clv===undefined).length>0?` (${bets.filter(b=>b.clv===null||b.clv===undefined).length})`:""}`},{k:"bankroll",l:"Bankroll"}].map(t=>
-            <button key={t.k} onClick={()=>setActiveTab(t.k)} style={{flex:1,padding:"8px 12px",borderRadius:3,border:"none",background:activeTab===t.k?`${T.text}10`:"transparent",color:activeTab===t.k?T.text:T.muted,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:F.body}}>{t.l}</button>)}
+          {[{k:"scanner",l:"Scanner"},{k:"tracker",l:`Tracker (${bets.length})`},{k:"clv",l:`CLV${pendingCLVCount>0?` (${pendingCLVCount})`:""}`},{k:"bankroll",l:"Bankroll"}].map(t=><button key={t.k} onClick={()=>setActiveTab(t.k)} style={{flex:1,padding:"8px 12px",borderRadius:3,border:"none",background:activeTab===t.k?`${T.text}10`:"transparent",color:activeTab===t.k?T.text:T.muted,fontSize:11,fontWeight:600,cursor:"pointer"}}>{t.l}</button>)}
         </div>
 
-        {/* SCANNER */}
         {activeTab==="scanner"&&<>
           <div style={{display:"flex",gap:3,marginBottom:8,overflowX:"auto",paddingBottom:2}}>
             {SPORTS.map(s=><button key={s.key} onClick={()=>setActiveSport(s.key)} style={{padding:"5px 12px",borderRadius:3,border:`1px solid ${activeSport===s.key?T.borderHi:T.border}`,background:activeSport===s.key?`${T.text}08`:"transparent",color:activeSport===s.key?T.text:T.muted,fontSize:11,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap",position:"relative"}}>
@@ -1020,84 +752,48 @@ function SharpLine(){
               {games[s.key]&&!loading[s.key]&&<span style={{position:"absolute",top:-2,right:-2,width:6,height:6,borderRadius:"50%",background:T.green}}/>}
             </button>)}
           </div>
-
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:4}}>
             <div style={{display:"flex",gap:3,alignItems:"center"}}>
-              <select value={bookFilter} onChange={e=>setBookFilter(e.target.value)} style={{padding:"3px 20px 3px 7px",borderRadius:3,border:`1px solid ${bookFilter!=="ALL"?`${T.gold}40`:T.border}`,background:bookFilter!=="ALL"?T.goldBg:"transparent",color:bookFilter!=="ALL"?T.gold:T.muted,fontSize:10,fontWeight:600,fontFamily:F.mono,appearance:"none",cursor:"pointer",backgroundImage:`url("data:image/svg+xml,%3Csvg width='8' height='5' viewBox='0 0 8 5' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L4 4L7 1' stroke='%23${dark?"484f58":"8b949e"}' stroke-width='1.5'/%3E%3C/svg%3E")`,backgroundRepeat:"no-repeat",backgroundPosition:"right 5px center"}}>
+              <select value={bookFilter} onChange={e=>setBookFilter(e.target.value)} style={{padding:"3px 20px 3px 7px",borderRadius:3,border:`1px solid ${bookFilter!=="ALL"?`${T.gold}40`:T.border}`,background:bookFilter!=="ALL"?T.goldBg:"transparent",color:bookFilter!=="ALL"?T.gold:T.muted,fontSize:10,fontWeight:600,fontFamily:F.mono,appearance:"none",cursor:"pointer"}}>
                 <option value="ALL">All My Books ({myBooks.length})</option>{myBooks.map(b=><option key={b} value={b}>{b}</option>)}
               </select>
-              <button onClick={()=>fetchSport(activeSport)} disabled={loading[activeSport]} style={{padding:"3px 10px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:loading[activeSport]?T.muted:T.dim,fontSize:9,fontWeight:600,cursor:loading[activeSport]?"wait":"pointer",fontFamily:F.mono}}>
-                {loading[activeSport]?"⏳ Loading...":"↻ Refresh"}
-              </button>
+              <button onClick={()=>fetchSport(activeSport)} disabled={loading[activeSport]} style={{padding:"3px 10px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:loading[activeSport]?T.muted:T.dim,fontSize:9,fontWeight:600,cursor:loading[activeSport]?"wait":"pointer",fontFamily:F.mono}}>{loading[activeSport]?"⏳ Loading...":"↻ Refresh"}</button>
             </div>
-            <span style={{color:T.muted,fontSize:9,fontFamily:F.mono}}>
-              {currentGames.length} games · {isMock?"MOCK DATA":"LIVE DATA"}
-              {lastFetch[activeSport]&&<> · updated {new Date(lastFetch[activeSport]).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</>}
-            </span>
+            <span style={{color:T.muted,fontSize:9,fontFamily:F.mono}}>{currentGames.length} games · {isMock?"MOCK DATA":"LIVE DATA"}{lastFetch[activeSport]&&<> · {new Date(lastFetch[activeSport]).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</>}</span>
           </div>
-
-          {errors[activeSport]&&<div style={{marginBottom:8,padding:"8px 12px",background:T.redBg,border:`1px solid ${T.red}22`,borderRadius:4}}>
-            <span style={{color:T.red,fontSize:10,fontFamily:F.mono}}>⚠ {errors[activeSport]} — check API key or try again</span>
-          </div>}
-
-          {loading[activeSport]&&currentGames.length===0&&<div style={{textAlign:"center",padding:40,color:T.muted}}>
-            <div style={{fontSize:20,marginBottom:8}}>⏳</div>
-            <div style={{fontSize:12}}>Fetching {isMock?"mock":"live"} odds for {SPORTS.find(s=>s.key===activeSport)?.label}...</div>
-          </div>}
-
-          {dayGroups.map(([dayKey, group]) => (
+          {errors[activeSport]&&<div style={{marginBottom:8,padding:"8px 12px",background:T.redBg,border:`1px solid ${T.red}22`,borderRadius:4}}><span style={{color:T.red,fontSize:10,fontFamily:F.mono}}>⚠ {errors[activeSport]}</span></div>}
+          {loading[activeSport]&&currentGames.length===0&&<div style={{textAlign:"center",padding:40,color:T.muted}}><div style={{fontSize:20,marginBottom:8}}>⏳</div><div style={{fontSize:12}}>Loading {SPORTS.find(s=>s.key===activeSport)?.label}...</div></div>}
+          {dayGroups.map(([dayKey,group])=>(
             <div key={dayKey}>
-              <div style={{padding:"6px 0",marginTop:8,marginBottom:4,borderBottom:`1px solid ${T.border}`}}>
-                <span style={{color:T.dim,fontSize:10,fontWeight:700,fontFamily:F.mono,letterSpacing:1}}>{group.label.toUpperCase()}</span>
-                <span style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginLeft:8}}>{group.games.length} games</span>
-              </div>
-              {group.games.map(g => <GameCard key={g.id} game={g} bookFilter={bookFilter} onAddBet={addBet} bankroll={bankroll} unitSize={unitSize} T={T} myBooks={myBooks} lineHistory={lineHistory}/>)}
+              <div style={{padding:"6px 0",marginTop:8,marginBottom:4,borderBottom:`1px solid ${T.border}`}}><span style={{color:T.dim,fontSize:10,fontWeight:700,fontFamily:F.mono,letterSpacing:1}}>{group.label.toUpperCase()}</span><span style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginLeft:8}}>{group.games.length} games</span></div>
+              {group.games.map(g=><GameCard key={g.id} game={g} bookFilter={bookFilter} onAddBet={addBet} bankroll={bankroll} unitSize={unitSize} T={T} myBooks={myBooks} lineHistory={lineHistory}/>)}
             </div>
           ))}
-
-          {!loading[activeSport]&&currentGames.length===0&&!errors[activeSport]&&<div style={{textAlign:"center",padding:36,color:T.muted}}>
-            <div style={{fontSize:20,marginBottom:6,opacity:0.4}}>🔍</div>
-            <div style={{fontSize:12,marginBottom:8}}>No games loaded for {SPORTS.find(s=>s.key===activeSport)?.label} yet.</div>
-            <button onClick={()=>fetchSport(activeSport)} style={{padding:"6px 14px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.dim,fontSize:10,cursor:"pointer",fontFamily:F.mono}}>↻ Load {SPORTS.find(s=>s.key===activeSport)?.label}</button>
-          </div>}
+          {!loading[activeSport]&&currentGames.length===0&&!errors[activeSport]&&<div style={{textAlign:"center",padding:36,color:T.muted}}><div style={{fontSize:20,marginBottom:6,opacity:0.4}}>🔍</div><div style={{fontSize:12,marginBottom:8}}>No games loaded for {SPORTS.find(s=>s.key===activeSport)?.label} yet.</div><button onClick={()=>fetchSport(activeSport)} style={{padding:"6px 14px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.dim,fontSize:10,cursor:"pointer",fontFamily:F.mono}}>↻ Load {SPORTS.find(s=>s.key===activeSport)?.label}</button></div>}
         </>}
 
-        {/* TRACKER */}
         {activeTab==="tracker"&&<>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-            <span style={{fontSize:13,fontWeight:700}}>Betting Ledger</span>
-            <button onClick={()=>setShowManualBet(!showManualBet)} style={{background:T.green,color:dark?T.bg:"#fff",border:"none",padding:"6px 12px",borderRadius:3,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>+ LOG BET</button>
-          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><span style={{fontSize:13,fontWeight:700}}>Betting Ledger</span><button onClick={()=>setShowManualBet(!showManualBet)} style={{background:T.green,color:dark?T.bg:"#fff",border:"none",padding:"6px 12px",borderRadius:3,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>+ LOG BET</button></div>
           {showManualBet&&<ManualBetForm onAddBet={addBet} onClose={()=>setShowManualBet(false)} T={T}/>}
-          <BetTracker bets={bets} setBets={setBets} bankroll={bankroll} unitSize={unitSize} T={T}/>
+          <BetTracker bets={bets} setBets={setBets} bankroll={bankroll} unitSize={unitSize} T={T} dbSyncing={dbSyncing}/>
         </>}
 
-        {/* CLV */}
-        {activeTab==="clv"&&(
-          <><div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Closing Line Value</div>
-          <CLVTab bets={bets} setBets={setBets} T={T}/></>
-        )}
+        {activeTab==="clv"&&<><div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Closing Line Value</div><CLVTab bets={bets} setBets={setBets} T={T}/></>}
 
-        {/* BANKROLL */}
         {activeTab==="bankroll"&&<>
           <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Bankroll Management</div>
           <BankrollPanel bankroll={bankroll} setBankroll={setBankroll} unitSize={unitSize} T={T}/>
           <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:14}}>
             <div style={{color:T.gold,fontSize:11,fontWeight:700,marginBottom:8}}>Unit Sizing by Edge</div>
-            <div style={{color:T.dim,fontSize:11,lineHeight:1.7,marginBottom:10}}>1 unit = 1% of bankroll. Size scales with edge confidence. Max 5 units (5%) — never overbet a single game.</div>
+            <div style={{color:T.dim,fontSize:11,lineHeight:1.7,marginBottom:10}}>1 unit = 1% of bankroll. Size scales with edge. Max 5 units (5%) — never overbet a single game.</div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:6}}>
-              {[{r:"3-4% edge",u:"2 units",a:bankroll>0?`$${(2*unitSize).toLocaleString()}`:"—"},{r:"4-6% edge",u:"3 units",a:bankroll>0?`$${(3*unitSize).toLocaleString()}`:"—"},{r:"6-8% edge",u:"4 units",a:bankroll>0?`$${(4*unitSize).toLocaleString()}`:"—"},{r:"8%+ edge",u:"5 units MAX",a:bankroll>0?`$${(5*unitSize).toLocaleString()}`:"—"}].map(r=>
-                <div key={r.r} style={{padding:"8px 10px",background:`${T.muted}08`,borderRadius:3,border:`1px solid ${T.border}`}}>
-                  <div style={{color:T.green,fontSize:10,fontWeight:700,fontFamily:F.mono}}>{r.r}</div>
-                  <div style={{color:T.text,fontSize:12,fontWeight:600,fontFamily:F.mono,marginTop:3}}>{r.u}</div>
-                  <div style={{color:T.gold,fontSize:11,fontFamily:F.mono,marginTop:1}}>{r.a}</div>
-                </div>)}
+              {[{r:"3-4% edge",u:"2 units",a:bankroll>0?`$${(2*unitSize).toLocaleString()}`:"—"},{r:"4-6% edge",u:"3 units",a:bankroll>0?`$${(3*unitSize).toLocaleString()}`:"—"},{r:"6-8% edge",u:"4 units",a:bankroll>0?`$${(4*unitSize).toLocaleString()}`:"—"},{r:"8%+ edge",u:"5 units MAX",a:bankroll>0?`$${(5*unitSize).toLocaleString()}`:"—"}].map(r=><div key={r.r} style={{padding:"8px 10px",background:`${T.muted}08`,borderRadius:3,border:`1px solid ${T.border}`}}><div style={{color:T.green,fontSize:10,fontWeight:700,fontFamily:F.mono}}>{r.r}</div><div style={{color:T.text,fontSize:12,fontWeight:600,fontFamily:F.mono,marginTop:3}}>{r.u}</div><div style={{color:T.gold,fontSize:11,fontFamily:F.mono,marginTop:1}}>{r.a}</div></div>)}
             </div>
           </div>
         </>}
 
         <div style={{marginTop:24,paddingTop:12,borderTop:`1px solid ${T.border}`,textAlign:"center",color:T.muted,fontSize:9,fontFamily:F.mono,lineHeight:1.8}}>
-          {isMock?"DEV MODE · MOCK DATA":"LIVE ODDS"} · {myBooks.length} SPORTSBOOKS · sharpline.com
+          {isMock?"DEV MODE · MOCK DATA":"LIVE ODDS"} · {myBooks.length} SPORTSBOOKS · CLOUD SYNC · sharpline.com
         </div>
       </div>
     </div>
