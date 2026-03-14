@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SHARPLINE Sync</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d1117; color: #e6edf3; font-family: -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+  .card { background: #161b22; border: 1px solid #21262d; border-radius: 12px; padding: 32px 24px; max-width: 340px; width: 100%; text-align: center; }
+  .logo { width: 48px; height: 48px; border-radius: 8px; background: linear-gradient(135deg, #d29922, #9e6a03); display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 900; color: #0d1117; font-family: monospace; margin: 0 auto 16px; }
+  h1 { font-size: 20px; font-weight: 800; margin-bottom: 6px; }
+  p { color: #8b949e; font-size: 13px; line-height: 1.6; margin-bottom: 24px; }
+  button { width: 100%; padding: 14px; background: #3fb950; color: #0d1117; border: none; border-radius: 8px; font-size: 15px; font-weight: 700; cursor: pointer; font-family: -apple-system, sans-serif; }
+  .status { margin-top: 16px; font-size: 12px; color: #8b949e; font-family: monospace; }
+  .success { color: #3fb950; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">SL</div>
+  <h1>SHARPLINE</h1>
+  <p>Tap below to sync your bet tracker to this device. Your bets will appear instantly.</p>
+  <button onclick="doSync()">Sync My Account →</button>
+  <div class="status" id="status"></div>
+</div>
+<script>
+function doSync() {
+  try {
+    localStorage.setItem("sl-user-id", "sl-jvjq2jjne");
+    var check = localStorage.getItem("sl-user-id");
+    if (check === "sl-jvjq2jjne") {
+      document.getElementById("status").innerHTML = '<span class="success">✓ Synced! Redirecting...</span>';
+      document.querySelector("button").disabled = true;
+      setTimeout(function() {
+        window.location.href = "https://sharpline-phi.vercel.app";
+      }, 1200);
+    } else {
+      document.getElementById("status").textContent = "Something went wrong. Try again.";
+    }
+  } catch(e) {
+    document.getElementById("status").textContent = "Error: " + e.message;
+  }
+}
+</script>
+</body>
+</html>
