@@ -4,803 +4,1218 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>SHARPLINE — Stop Gambling. Start Investing.</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23d29922'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' font-family='monospace' font-weight='900' font-size='14' fill='%230d1117'>SL</text></svg>">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23d4a012'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' font-family='monospace' font-weight='900' font-size='14' fill='%230a0e14'>SL</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&display=swap" rel="stylesheet">
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0d1117; }
-  ::-webkit-scrollbar { height: 3px; width: 6px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: #21262d; border-radius: 3px; }
-  select option { background: #161b22; color: #e6edf3; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-  @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0a0e14;font-family:'DM Sans',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  ::-webkit-scrollbar{height:3px;width:5px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:#1c2333;border-radius:3px}
+  select option{background:#111820;color:#c5cdd8}
+  input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+  input[type=number]{-moz-appearance:textfield}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+  @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+  .fade-up{animation:fadeUp .35s ease-out both}
+  .pulse{animation:pulse 2s infinite}
+  .shimmer{background:linear-gradient(90deg,#1c233300 0%,#1c233366 50%,#1c233300 100%);background-size:200% 100%;animation:shimmer 1.5s infinite}
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useMemo, useCallback, useRef } = React;
+const{useState,useEffect,useMemo,useCallback,useRef}=React;
 
-// ─── CONFIG ───
-// To RECONNECT the API: change API_DISCONNECTED to false
-const API_DISCONNECTED = false;
-const API_BASE = "/api";
+// ════════════════════════════════════════════════════════════════
+// §1  CONFIGURATION
+// ════════════════════════════════════════════════════════════════
 
-// ─── SUPABASE ───
-const SUPABASE_URL = "https://vfnnmfxvuuqpfrkvwftu.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_69angIXacvKS7CtGK27v6w_NM2w6okB";
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const SUPABASE_URL="https://vfnnmfxvuuqpfrkvwftu.supabase.co";
+const SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZmbm5tZnh2dXVxcGZya3Z3ZnR1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDE4OTg1NTcsImV4cCI6MjA1NzQ3NDU1N30.V_Smr-XMGICWp_MtNT_1MxBvor3Z0cEb9HAB-LuN_D8";
+const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 
-// Stable device ID — same user_id across all your browsers/devices
-// To share bets across devices: use the same browser profile, or we can add a login later
-const USER_ID = (() => {
-  let id = localStorage.getItem("sl-user-id");
-  if (!id) { id = "sl-" + Math.random().toString(36).slice(2, 11); localStorage.setItem("sl-user-id", id); }
+function getUserId(){
+  let id=localStorage.getItem("sl-user-id");
+  if(!id){id="sl-"+Math.random().toString(36).slice(2,12);localStorage.setItem("sl-user-id",id)}
   return id;
-})();
-
-// ─── DB OPERATIONS ───
-async function dbLoad() {
-  try {
-    const { data, error } = await sb.from("bets").select("*").eq("user_id", USER_ID).order("timestamp", { ascending: false });
-    if (error) throw error;
-    return (data || []).map(r => ({
-      id: r.id, sport: r.sport, game: r.game, type: r.type, line: r.line,
-      odds: r.odds, book: r.book, edge: r.edge, units: r.units, result: r.result,
-      entryOdds: r.entry_odds, closingOdds: r.closing_odds, clv: r.clv, timestamp: r.timestamp,
-    }));
-  } catch(e) { console.error("dbLoad:", e); return []; }
 }
+const UID=getUserId();
 
-async function dbAdd(bet) {
-  try {
-    const { data, error } = await sb.from("bets").insert([{
-      user_id: USER_ID, sport: bet.sport, game: bet.game, type: bet.type,
-      line: bet.line, odds: bet.odds, book: bet.book, edge: bet.edge, units: bet.units,
-      result: bet.result || null, entry_odds: bet.entryOdds || bet.odds,
-      closing_odds: bet.closingOdds || null, clv: bet.clv || null,
-      timestamp: bet.timestamp || new Date().toISOString(),
-    }]).select().single();
-    if (error) throw error;
-    return data.id;
-  } catch(e) { console.error("dbAdd:", e); return null; }
-}
+const SHARP_BOOKS=["pinnacle","williamhill_us","bookmaker","circasports","betcris","betonlineag"];
+const SHARP_LABEL={pinnacle:"Pinnacle",williamhill_us:"Circa",bookmaker:"Bookmaker",circasports:"Circa Sports",betcris:"BetCRIS",betonlineag:"BetOnline"};
+const MIN_SHARP=2;
 
-async function dbUpdate(id, fields) {
-  try {
-    const mapped = {};
-    if (fields.result !== undefined) mapped.result = fields.result;
-    if (fields.closingOdds !== undefined) mapped.closing_odds = fields.closingOdds;
-    if (fields.clv !== undefined) mapped.clv = fields.clv;
-    const { error } = await sb.from("bets").update(mapped).eq("id", id).eq("user_id", USER_ID);
-    if (error) throw error;
-  } catch(e) { console.error("dbUpdate:", e); }
-}
-
-async function dbDelete(id) {
-  try {
-    const { error } = await sb.from("bets").delete().eq("id", id).eq("user_id", USER_ID);
-    if (error) throw error;
-  } catch(e) { console.error("dbDelete:", e); }
-}
-
-const SPORTS = [
-  { key: "NFL",   api: "americanfootball_nfl",   label: "NFL",   icon: "🏈" },
-  { key: "NCAAF", api: "americanfootball_ncaaf", label: "NCAAF", icon: "🏈" },
-  { key: "NBA",   api: "basketball_nba",         label: "NBA",   icon: "🏀" },
-  { key: "NCAAB", api: "basketball_ncaab",       label: "NCAAB", icon: "🏀" },
-  { key: "MLB",   api: "baseball_mlb",           label: "MLB",   icon: "⚾"  },
-  { key: "NHL",   api: "icehockey_nhl",          label: "NHL",   icon: "🏒" },
+const SPORTS=[
+  {key:"basketball_nba",label:"NBA",icon:"🏀",type:"basketball"},
+  {key:"basketball_ncaab",label:"NCAAB",icon:"🏀",type:"basketball"},
+  {key:"baseball_mlb",label:"MLB",icon:"⚾",type:"baseball"},
+  {key:"icehockey_nhl",label:"NHL",icon:"🏒",type:"hockey"},
+  {key:"americanfootball_nfl",label:"NFL",icon:"🏈",type:"football"},
+  {key:"americanfootball_ncaaf",label:"NCAAF",icon:"🏈",type:"football"},
 ];
 
-const BOOK_MAP = {
-  draftkings:"DraftKings",fanduel:"FanDuel",betmgm:"BetMGM",williamhill_us:"Caesars",
-  pointsbetus:"PointsBet",bet365:"Bet365",betrivers:"BetRivers",hardrockbet:"Hard Rock Bet",
-  fanatics:"Fanatics",espnbet:"ESPN BET",betway:"Betway",wynnbet:"WynnBET",
-  superbook:"SuperBook",circasports:"Circa",pinnacle:"Pinnacle",betonlineag:"BetOnline",
-  bovada:"Bovada",heritage:"Heritage",bookmaker:"Bookmaker",fivedimes:"5Dimes",
-  lowvig:"LowVig",betparx:"BetParx",betus:"BetUS",mybookieag:"MyBookie",
-  unibet_us:"Unibet",twinspires:"TwinSpires",foxbet:"FOX Bet",barstool:"Barstool",
-  ballybet:"BallyBet",betfair:"Betfair",williamhill:"William Hill",
+const ALL_BOOKS=["DraftKings","FanDuel","BetMGM","Caesars","ESPN BET","BetRivers","PointsBet","Bet365","BetOnline","Bovada","Hard Rock","Fanatics"];
+
+// ════════════════════════════════════════════════════════════════
+// §2  THEME
+// ════════════════════════════════════════════════════════════════
+
+const T={
+  bg:"#0a0e14",card:"#111820",card2:"#151d28",bdr:"#1c2333",
+  tx:"#c5cdd8",txB:"#e8edf4",mut:"#5a6578",
+  gold:"#d4a012",goldD:"#9e7a1a",
+  grn:"#2ea043",grnB:"#12261e",
+  red:"#da3633",redB:"#2d1214",
+  blu:"#388bfd",bluB:"#0d2644",
+  orn:"#d18616",ornB:"#2a1d0e",
+  pur:"#a371f7",purB:"#1e143a",
 };
-const ALL_BOOKS = ["DraftKings","FanDuel","BetMGM","Caesars","PointsBet","Bet365","BetRivers","Hard Rock Bet","Fanatics","ESPN BET","Betway","WynnBET","SuperBook","Circa","Pinnacle","BetOnline","Bovada","Heritage","Bookmaker","5Dimes"];
-const BOOK_SHORT = {DraftKings:"DK",FanDuel:"FD",BetMGM:"MGM",Caesars:"CZR",PointsBet:"PB",Bet365:"365",BetRivers:"BRiv","Hard Rock Bet":"HRB",Fanatics:"FAN","ESPN BET":"ESPN",Betway:"BW",WynnBET:"WYNN",SuperBook:"SUP",Circa:"CRC",Pinnacle:"PIN",BetOnline:"BOL",Bovada:"BOV",Heritage:"HER",Bookmaker:"BKM","5Dimes":"5D"};
-const short = (b) => BOOK_SHORT[b]||b;
-const DEFAULT_MY_BOOKS = ["DraftKings","FanDuel","BetMGM","Caesars"];
-const SHARP_BOOKS = ["Pinnacle","Circa","Bookmaker"];
+const F={s:"'DM Sans',system-ui,sans-serif",m:"'IBM Plex Mono',monospace"};
 
-// ─── MATH ───
-const a2i = (a) => a < 0 ? Math.abs(a)/(Math.abs(a)+100) : 100/(a+100);
+// ════════════════════════════════════════════════════════════════
+// §3  MATH ENGINE
+// ════════════════════════════════════════════════════════════════
 
-function calcEdge(yours, sharp) {
-  const yi = a2i(yours), si = a2i(sharp);
-  return Math.min(Math.max(0, (si - yi) * 100), 10);
+// American odds → implied probability
+const a2i=a=>a<0?Math.abs(a)/(Math.abs(a)+100):100/(a+100);
+// American → decimal
+const a2d=a=>a<0?1+100/Math.abs(a):1+a/100;
+
+// Edge: pure implied-probability-point difference, hard-capped at 10%
+// This is the honest measure across all odds formats
+function calcEdge(yours,sharp){
+  const yi=a2i(yours),si=a2i(sharp);
+  return Math.min(Math.max(0,(si-yi)*100),10);
 }
 
-function calcCLV(entryOdds, closingOdds) {
-  if (!entryOdds || !closingOdds) return null;
-  const ei = a2i(entryOdds), ci = a2i(closingOdds);
-  return (ci - ei) * 100;
+// CLV: how much value your entry captured vs closing line
+const calcCLV=(entry,close)=>{const e=a2i(entry),c=a2i(close);return((c-e)/e)*100;};
+
+// Unit sizing — scales with edge, max 5u (5% of bankroll)
+const suggestUnits=e=>e>=8?5:e>=6?4:e>=4?3:e>=2.5?2:1;
+
+// Robust median (resists outlier skew vs mean)
+function median(arr){
+  if(!arr.length)return 0;
+  const s=[...arr].sort((a,b)=>a-b);
+  const m=Math.floor(s.length/2);
+  return s.length%2?s[m]:(s[m-1]+s[m])/2;
 }
 
-const suggestUnits = (e) => e>=8?5:e>=6?4:e>=4?3:e>=3?2:1;
-
-function median(arr) {
-  if (arr.length === 0) return 0;
-  const sorted = [...arr].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid-1] + sorted[mid]) / 2;
+// Haversine distance in miles (for travel analysis)
+function haversine(lat1,lon1,lat2,lon2){
+  const R=3959,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
 
-function getDayLabel(date) {
-  const d = new Date(date), now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const gameDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const diff = Math.round((gameDay - today) / (1000*60*60*24));
-  if (diff === 0) return "Today";
-  if (diff === 1) return "Tomorrow";
-  if (diff < 0) return "Earlier";
-  return d.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" });
-}
+// ════════════════════════════════════════════════════════════════
+// §4  TEAM CITIES (travel/timezone analysis)
+// ════════════════════════════════════════════════════════════════
 
-function getDayKey(date) {
-  const d = new Date(date);
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-}
-
-// ─── RECOMMENDATION ENGINE ───
-function generateRecommendation(game, myBooks, lineHistory) {
-  const recs = [];
-  game.bookLines.filter(bl => myBooks.includes(bl.book)).forEach(bl => {
-    const edge = game.edges.find(e => e.book === bl.book) || { spreadEdge:0, totalEdge:0 };
-
-    // TOTAL
-    if (bl.total && bl.totalOdds) {
-      let score = 0, reasons = [], signals = [];
-      if (edge.totalEdge >= 5) { score += 40; reasons.push(`${edge.totalEdge.toFixed(1)}% edge vs sharp consensus`); }
-      else if (edge.totalEdge >= 3) { score += 20; reasons.push(`${edge.totalEdge.toFixed(1)}% edge vs consensus`); }
-      if (bl.totalOdds > 0) { score += 25; signals.push(`plus money (${bl.totalOdds > 0?"+":""}${bl.totalOdds})`); }
-      else if (bl.totalOdds >= -108) { score += 15; signals.push(`reduced juice (${bl.totalOdds})`); }
-      else if (bl.totalOdds <= -130) { score -= 10; signals.push(`heavy juice (${bl.totalOdds})`); }
-      const otherTotals = game.bookLines.filter(x => x.book !== bl.book && x.total).map(x => x.total);
-      if (otherTotals.length > 0) {
-        const mkt = median(otherTotals);
-        if (bl.total - mkt <= -0.4) { score += 20; signals.push(`best total in market (${bl.total} vs mkt ${mkt})`); }
-        else if (bl.total - mkt >= 0.4) score -= 10;
-      }
-      const hist = lineHistory[game.id];
-      if (hist?.[bl.book]?.total && bl.total !== hist[bl.book].total) {
-        const moved = bl.total - hist[bl.book].total;
-        signals.push(`line moved ${moved > 0 ? "↑" : "↓"} ${hist[bl.book].total}→${bl.total}`);
-        score += 10;
-      }
-      if (score >= 50) {
-        const side = bl.totalOdds >= (bl.underOdds || -110) ? "Over" : "Under";
-        const conf = score >= 70 ? "HIGH" : "MEDIUM";
-        recs.push({ type:"Total", book:bl.book, line:bl.total, odds:bl.totalOdds, side, conf, score,
-          call:`Take ${side} ${bl.total} at ${bl.book} (${bl.totalOdds > 0?"+":""}${bl.totalOdds})`,
-          reasons:[...reasons, ...signals], units:suggestUnits(edge.totalEdge), edge:edge.totalEdge });
-      }
-    }
-
-    // SPREAD
-    if (bl.spread != null && bl.spreadOdds) {
-      let score = 0, reasons = [], signals = [];
-      if (edge.spreadEdge >= 5) { score += 40; reasons.push(`${edge.spreadEdge.toFixed(1)}% edge vs sharp consensus`); }
-      else if (edge.spreadEdge >= 3) { score += 20; reasons.push(`${edge.spreadEdge.toFixed(1)}% edge vs consensus`); }
-      if (bl.spreadOdds > 0) { score += 25; signals.push(`plus money (${bl.spreadOdds > 0?"+":""}${bl.spreadOdds})`); }
-      else if (bl.spreadOdds >= -108) { score += 15; signals.push(`reduced juice (${bl.spreadOdds})`); }
-      else if (bl.spreadOdds <= -130) { score -= 10; signals.push(`heavy juice (${bl.spreadOdds})`); }
-      const otherSpreads = game.bookLines.filter(x => x.book !== bl.book && x.spread != null).map(x => x.spread);
-      if (otherSpreads.length > 0) {
-        const mkt = median(otherSpreads);
-        if (bl.spread - mkt <= -0.4) { score += 20; signals.push(`better number (${bl.spread>0?"+":""}${bl.spread} vs mkt ${mkt>0?"+":""}${mkt})`); }
-        else if (bl.spread - mkt >= 0.4) score -= 10;
-      }
-      const hist = lineHistory[game.id];
-      if (hist?.[bl.book]?.spread != null && bl.spread !== hist[bl.book].spread) {
-        signals.push(`spread moved ${hist[bl.book].spread>0?"+":""}${hist[bl.book].spread}→${bl.spread>0?"+":""}${bl.spread}`);
-        score += 10;
-      }
-      if (score >= 50) {
-        const conf = score >= 70 ? "HIGH" : "MEDIUM";
-        recs.push({ type:"Spread", book:bl.book, line:bl.spread, odds:bl.spreadOdds,
-          side: bl.spread < 0 ? game.home : game.away, conf, score,
-          call:`Take ${bl.spread < 0 ? game.home : game.away} ${bl.spread>0?"+":""}${bl.spread} at ${bl.book} (${bl.spreadOdds>0?"+":""}${bl.spreadOdds})`,
-          reasons:[...reasons, ...signals], units:suggestUnits(edge.spreadEdge), edge:edge.spreadEdge });
-      }
-    }
-  });
-  return recs.sort((a,b) => b.score - a.score);
-}
-
-// ─── LOCAL STORAGE (theme/settings only — bets now in Supabase) ───
-const SK = { bankroll:"sl-bank-v2", theme:"sl-theme-v2", myBooks:"sl-mybooks-v2" };
-function ld(k,fb){try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb}catch{return fb}}
-function sv(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){console.error(e)}}
-
-// ─── THEMES ───
-const themes = {
-  dark:  { bg:"#0d1117",card:"#161b22",cardAlt:"#1c2129",border:"#21262d",borderHi:"#30363d",gold:"#d29922",goldDim:"#9e6a03",goldBg:"rgba(210,153,34,0.08)",green:"#3fb950",greenBg:"rgba(63,185,80,0.1)",red:"#f85149",redBg:"rgba(248,81,73,0.1)",text:"#e6edf3",dim:"#8b949e",muted:"#484f58",toggle:"#8b949e" },
-  light: { bg:"#ffffff",card:"#f6f8fa",cardAlt:"#eef1f5",border:"#d1d9e0",borderHi:"#b0b8c1",gold:"#b8860b",goldDim:"#8b6914",goldBg:"rgba(184,134,11,0.07)",green:"#1a7f37",greenBg:"rgba(26,127,55,0.08)",red:"#cf222e",redBg:"rgba(207,34,46,0.08)",text:"#1f2328",dim:"#59636e",muted:"#8b949e",toggle:"#59636e" },
+const CITIES={
+  // NBA
+  "Atlanta Hawks":{c:"Atlanta",lat:33.757,lon:-84.396},
+  "Boston Celtics":{c:"Boston",lat:42.366,lon:-71.062},
+  "Brooklyn Nets":{c:"Brooklyn",lat:40.683,lon:-73.975},
+  "Charlotte Hornets":{c:"Charlotte",lat:35.225,lon:-80.839},
+  "Chicago Bulls":{c:"Chicago",lat:41.881,lon:-87.674},
+  "Cleveland Cavaliers":{c:"Cleveland",lat:41.496,lon:-81.688},
+  "Dallas Mavericks":{c:"Dallas",lat:32.791,lon:-96.810},
+  "Denver Nuggets":{c:"Denver",lat:39.749,lon:-105.008},
+  "Detroit Pistons":{c:"Detroit",lat:42.341,lon:-83.055},
+  "Golden State Warriors":{c:"San Francisco",lat:37.768,lon:-122.388},
+  "Houston Rockets":{c:"Houston",lat:29.751,lon:-95.362},
+  "Indiana Pacers":{c:"Indianapolis",lat:39.764,lon:-86.156},
+  "LA Clippers":{c:"Los Angeles",lat:33.943,lon:-118.340},
+  "Los Angeles Lakers":{c:"Los Angeles",lat:34.043,lon:-118.267},
+  "Memphis Grizzlies":{c:"Memphis",lat:35.138,lon:-90.051},
+  "Miami Heat":{c:"Miami",lat:25.781,lon:-80.187},
+  "Milwaukee Bucks":{c:"Milwaukee",lat:43.045,lon:-87.917},
+  "Minnesota Timberwolves":{c:"Minneapolis",lat:44.980,lon:-93.276},
+  "New Orleans Pelicans":{c:"New Orleans",lat:29.949,lon:-90.082},
+  "New York Knicks":{c:"New York",lat:40.751,lon:-73.994},
+  "Oklahoma City Thunder":{c:"OKC",lat:35.463,lon:-97.515},
+  "Orlando Magic":{c:"Orlando",lat:28.539,lon:-81.384},
+  "Philadelphia 76ers":{c:"Philadelphia",lat:39.901,lon:-75.172},
+  "Phoenix Suns":{c:"Phoenix",lat:33.446,lon:-112.071},
+  "Portland Trail Blazers":{c:"Portland",lat:45.532,lon:-122.667},
+  "Sacramento Kings":{c:"Sacramento",lat:38.580,lon:-121.500},
+  "San Antonio Spurs":{c:"San Antonio",lat:29.427,lon:-98.438},
+  "Toronto Raptors":{c:"Toronto",lat:43.643,lon:-79.379},
+  "Utah Jazz":{c:"Salt Lake City",lat:40.768,lon:-111.901},
+  "Washington Wizards":{c:"Washington",lat:38.898,lon:-77.021},
+  // NHL
+  "Anaheim Ducks":{c:"Anaheim",lat:33.808,lon:-117.877},
+  "Utah Hockey Club":{c:"SLC",lat:40.768,lon:-111.901},
+  "Boston Bruins":{c:"Boston",lat:42.366,lon:-71.062},
+  "Buffalo Sabres":{c:"Buffalo",lat:42.875,lon:-78.876},
+  "Calgary Flames":{c:"Calgary",lat:51.038,lon:-114.052},
+  "Carolina Hurricanes":{c:"Raleigh",lat:35.803,lon:-78.722},
+  "Chicago Blackhawks":{c:"Chicago",lat:41.881,lon:-87.674},
+  "Colorado Avalanche":{c:"Denver",lat:39.749,lon:-105.008},
+  "Columbus Blue Jackets":{c:"Columbus",lat:39.969,lon:-83.006},
+  "Dallas Stars":{c:"Dallas",lat:32.791,lon:-96.810},
+  "Detroit Red Wings":{c:"Detroit",lat:42.341,lon:-83.055},
+  "Edmonton Oilers":{c:"Edmonton",lat:53.547,lon:-113.498},
+  "Florida Panthers":{c:"Ft Lauderdale",lat:26.158,lon:-80.326},
+  "Los Angeles Kings":{c:"Los Angeles",lat:34.043,lon:-118.267},
+  "Minnesota Wild":{c:"Minneapolis",lat:44.945,lon:-93.101},
+  "Montreal Canadiens":{c:"Montreal",lat:45.496,lon:-73.569},
+  "Nashville Predators":{c:"Nashville",lat:36.159,lon:-86.779},
+  "New Jersey Devils":{c:"Newark",lat:40.734,lon:-74.171},
+  "New York Islanders":{c:"New York",lat:40.683,lon:-73.975},
+  "New York Rangers":{c:"New York",lat:40.751,lon:-73.994},
+  "Ottawa Senators":{c:"Ottawa",lat:45.297,lon:-75.928},
+  "Philadelphia Flyers":{c:"Philadelphia",lat:39.901,lon:-75.172},
+  "Pittsburgh Penguins":{c:"Pittsburgh",lat:40.440,lon:-79.990},
+  "San Jose Sharks":{c:"San Jose",lat:37.333,lon:-121.901},
+  "Seattle Kraken":{c:"Seattle",lat:47.622,lon:-122.354},
+  "St. Louis Blues":{c:"St. Louis",lat:38.627,lon:-90.203},
+  "Tampa Bay Lightning":{c:"Tampa",lat:27.943,lon:-82.452},
+  "Toronto Maple Leafs":{c:"Toronto",lat:43.643,lon:-79.379},
+  "Vancouver Canucks":{c:"Vancouver",lat:49.278,lon:-123.109},
+  "Vegas Golden Knights":{c:"Las Vegas",lat:36.103,lon:-115.178},
+  "Washington Capitals":{c:"Washington",lat:38.898,lon:-77.021},
+  "Winnipeg Jets":{c:"Winnipeg",lat:49.893,lon:-97.144},
+  // MLB (major cities)
+  "Arizona Diamondbacks":{c:"Phoenix",lat:33.446,lon:-112.071},
+  "Atlanta Braves":{c:"Atlanta",lat:33.891,lon:-84.468},
+  "Baltimore Orioles":{c:"Baltimore",lat:39.284,lon:-76.622},
+  "Boston Red Sox":{c:"Boston",lat:42.346,lon:-71.098},
+  "Chicago Cubs":{c:"Chicago",lat:41.948,lon:-87.656},
+  "Chicago White Sox":{c:"Chicago",lat:41.830,lon:-87.634},
+  "Cincinnati Reds":{c:"Cincinnati",lat:39.097,lon:-84.508},
+  "Cleveland Guardians":{c:"Cleveland",lat:41.496,lon:-81.685},
+  "Colorado Rockies":{c:"Denver",lat:39.756,lon:-104.994},
+  "Detroit Tigers":{c:"Detroit",lat:42.339,lon:-83.049},
+  "Houston Astros":{c:"Houston",lat:29.757,lon:-95.355},
+  "Kansas City Royals":{c:"Kansas City",lat:39.051,lon:-94.481},
+  "Los Angeles Angels":{c:"Anaheim",lat:33.800,lon:-117.883},
+  "Los Angeles Dodgers":{c:"Los Angeles",lat:34.074,lon:-118.240},
+  "Miami Marlins":{c:"Miami",lat:25.778,lon:-80.220},
+  "Milwaukee Brewers":{c:"Milwaukee",lat:43.028,lon:-87.971},
+  "Minnesota Twins":{c:"Minneapolis",lat:44.982,lon:-93.278},
+  "New York Mets":{c:"New York",lat:40.757,lon:-73.846},
+  "New York Yankees":{c:"New York",lat:40.829,lon:-73.926},
+  "Oakland Athletics":{c:"Oakland",lat:37.752,lon:-122.201},
+  "Philadelphia Phillies":{c:"Philadelphia",lat:39.906,lon:-75.166},
+  "Pittsburgh Pirates":{c:"Pittsburgh",lat:40.447,lon:-80.006},
+  "San Diego Padres":{c:"San Diego",lat:32.707,lon:-117.157},
+  "San Francisco Giants":{c:"San Francisco",lat:37.778,lon:-122.389},
+  "Seattle Mariners":{c:"Seattle",lat:47.591,lon:-122.332},
+  "St. Louis Cardinals":{c:"St. Louis",lat:38.623,lon:-90.193},
+  "Tampa Bay Rays":{c:"Tampa",lat:27.768,lon:-82.653},
+  "Texas Rangers":{c:"Arlington",lat:32.751,lon:-97.083},
+  "Toronto Blue Jays":{c:"Toronto",lat:43.641,lon:-79.389},
+  "Washington Nationals":{c:"Washington",lat:38.873,lon:-77.007},
 };
-const F = { body:"'Inter',-apple-system,sans-serif", mono:"'SF Mono','JetBrains Mono','Cascadia Code',monospace" };
 
-// ─── MOCK DATA ───
-function getMockGames(sportKey) {
-  const now = new Date();
-  const t1 = new Date(now.getTime() + 3*60*60*1000);
-  const t2 = new Date(now.getTime() + 6*60*60*1000);
-  const t3 = new Date(now.getTime() + 26*60*60*1000);
-  const mockGames = {
-    NBA: [
-      { id:"nba-mock-1", away:"Boston Celtics", home:"Miami Heat", time:t1,
-        books:[{n:"DraftKings",sp:-4.5,so:-112,tot:218.5,too:-110,uto:-110},{n:"FanDuel",sp:-4.5,so:-114,tot:218.5,too:-112,uto:-108},{n:"BetMGM",sp:-4,so:-115,tot:219,too:-110,uto:-110},{n:"Caesars",sp:-4.5,so:-110,tot:218,too:+102,uto:-122},{n:"Pinnacle",sp:-4.5,so:-108,tot:218.5,too:-109,uto:-109},{n:"Circa",sp:-4.5,so:-107,tot:218.5,too:-108,uto:-110}]},
-      { id:"nba-mock-2", away:"LA Lakers", home:"Golden State Warriors", time:t2,
-        books:[{n:"DraftKings",sp:-2,so:-110,tot:227,too:-110,uto:-110},{n:"FanDuel",sp:-2,so:-112,tot:227,too:-108,uto:-112},{n:"BetMGM",sp:-1.5,so:-118,tot:226.5,too:-110,uto:-110},{n:"Caesars",sp:-2,so:-110,tot:227.5,too:+105,uto:-125},{n:"Pinnacle",sp:-2,so:-107,tot:227,too:-106,uto:-112}]},
-    ],
-    NHL: [
-      { id:"nhl-mock-1", away:"Detroit Red Wings", home:"Toronto Maple Leafs", time:t1,
-        books:[{n:"DraftKings",sp:-1.5,so:+190,tot:6,too:-135,uto:+110},{n:"FanDuel",sp:-1.5,so:+188,tot:6,too:-138,uto:+114},{n:"BetMGM",sp:-1.5,so:+195,tot:6.5,too:+110,uto:-130},{n:"Caesars",sp:-1.5,so:+185,tot:6,too:-140,uto:+116},{n:"Pinnacle",sp:-1.5,so:+200,tot:6,too:-130,uto:+108}]},
-      { id:"nhl-mock-2", away:"Colorado Avalanche", home:"Edmonton Oilers", time:t3,
-        books:[{n:"DraftKings",sp:-1.5,so:+175,tot:6.5,too:-115,uto:-105},{n:"FanDuel",sp:-1.5,so:+172,tot:6.5,too:-118,uto:+100},{n:"BetMGM",sp:-1.5,so:+180,tot:6,too:+115,uto:-135},{n:"Caesars",sp:-1.5,so:+170,tot:6.5,too:-110,uto:-110},{n:"Pinnacle",sp:-1.5,so:+182,tot:6.5,too:-112,uto:-106}]},
-    ],
-    NCAAB: [
-      { id:"ncaab-mock-1", away:"Duke Blue Devils", home:"North Carolina Tar Heels", time:t2,
-        books:[{n:"DraftKings",sp:+1,so:-110,tot:152,too:-110,uto:-110},{n:"FanDuel",sp:+1,so:-112,tot:152,too:-112,uto:-108},{n:"BetMGM",sp:+1.5,so:-115,tot:152.5,too:-108,uto:-112},{n:"Caesars",sp:+1,so:-108,tot:151.5,too:+100,uto:-120}]},
-    ],
-    NFL: [
-      { id:"nfl-mock-1", away:"Kansas City Chiefs", home:"Baltimore Ravens", time:t3,
-        books:[{n:"DraftKings",sp:+3,so:-110,tot:47.5,too:-110,uto:-110},{n:"FanDuel",sp:+3,so:-112,tot:47.5,too:-108,uto:-112},{n:"BetMGM",sp:+2.5,so:-118,tot:48,too:-112,uto:-108},{n:"Caesars",sp:+3,so:-108,tot:47,too:+102,uto:-122},{n:"Pinnacle",sp:+3,so:-107,tot:47.5,too:-106,uto:-112}]},
-    ],
-    NCAAF: [], MLB: [],
+// ════════════════════════════════════════════════════════════════
+// §5  SUPABASE DATABASE LAYER
+// ════════════════════════════════════════════════════════════════
+
+async function dbLoad(){
+  try{
+    const{data,error}=await sb.from("bets").select("*").eq("user_id",UID).order("created_at",{ascending:false});
+    if(error)throw error;
+    return(data||[]).map(r=>({
+      id:r.id,sport:r.sport,game:r.game,type:r.type,line:r.line,
+      odds:r.odds,book:r.book,edge:r.edge,units:r.units,result:r.result,
+      entryOdds:r.entry_odds||r.odds,closingOdds:r.closing_odds,clv:r.clv,
+      ts:r.timestamp||r.created_at,
+    }));
+  }catch(e){console.error("dbLoad:",e);return[];}
+}
+
+async function dbAdd(bet){
+  try{
+    const{data,error}=await sb.from("bets").insert({
+      user_id:UID,sport:bet.sport,game:bet.game,type:bet.type,
+      line:bet.line,odds:bet.odds,book:bet.book,edge:bet.edge,
+      units:bet.units,result:null,entry_odds:bet.entryOdds||bet.odds,
+      closing_odds:null,clv:null,timestamp:new Date().toISOString(),
+    }).select().single();
+    if(error)throw error;
+    return data.id;
+  }catch(e){console.error("dbAdd:",e);return null;}
+}
+
+async function dbUpdate(id,fields){
+  try{
+    const m={};
+    if(fields.result!==undefined)m.result=fields.result;
+    if(fields.closingOdds!==undefined)m.closing_odds=fields.closingOdds;
+    if(fields.clv!==undefined)m.clv=fields.clv;
+    const{error}=await sb.from("bets").update(m).eq("id",id).eq("user_id",UID);
+    if(error)throw error;
+  }catch(e){console.error("dbUpdate:",e);}
+}
+
+async function dbDel(id){
+  try{
+    const{error}=await sb.from("bets").delete().eq("id",id).eq("user_id",UID);
+    if(error)throw error;
+  }catch(e){console.error("dbDel:",e);}
+}
+
+// ════════════════════════════════════════════════════════════════
+// §6  RESEARCH ENGINE
+// ════════════════════════════════════════════════════════════════
+
+function analyzeResearch(game,recentScores){
+  const factors=[];
+  const home=game.home_team,away=game.away_team;
+  const gt=new Date(game.commence_time).getTime();
+  let restH=null,restA=null,b2bH=false,b2bA=false;
+
+  // ── Rest days ──
+  if(recentScores&&recentScores.length){
+    let lastH=null,lastA=null;
+    for(const s of recentScores){
+      const st=new Date(s.commence_time).getTime();
+      if(st>=gt)continue;
+      if(s.home_team===home||s.away_team===home){if(!lastH||st>lastH)lastH=st;}
+      if(s.home_team===away||s.away_team===away){if(!lastA||st>lastA)lastA=st;}
+    }
+    if(lastH){
+      restH=Math.floor((gt-lastH)/864e5);
+      if(restH===0){b2bH=true;factors.push({type:"rest",team:home,label:"B2B",detail:`${home} on back-to-back`,impact:-2,color:T.red});}
+      else if(restH===1)factors.push({type:"rest",team:home,label:`${restH}d rest`,detail:`${home} — 1 day rest`,impact:-1,color:T.orn});
+      else if(restH>=3)factors.push({type:"rest",team:home,label:`${restH}d rest`,detail:`${home} well-rested (${restH} days)`,impact:1,color:T.grn});
+    }
+    if(lastA){
+      restA=Math.floor((gt-lastA)/864e5);
+      if(restA===0){b2bA=true;factors.push({type:"rest",team:away,label:"B2B",detail:`${away} on back-to-back`,impact:-2,color:T.red});}
+      else if(restA===1)factors.push({type:"rest",team:away,label:`${restA}d rest`,detail:`${away} — 1 day rest`,impact:-1,color:T.orn});
+      else if(restA>=3)factors.push({type:"rest",team:away,label:`${restA}d rest`,detail:`${away} well-rested (${restA} days)`,impact:1,color:T.grn});
+    }
+    // Rest advantage
+    if(restH!==null&&restA!==null&&Math.abs(restH-restA)>=2){
+      const adv=restH>restA?home:away;
+      factors.push({type:"rest_adv",team:adv,label:`+${Math.abs(restH-restA)}d rest edge`,detail:`${adv} has ${Math.abs(restH-restA)}-day rest advantage`,impact:restH>restA?1:-1,color:T.blu});
+    }
+  }
+
+  // ── Travel distance ──
+  let travelMi=null;
+  const hc=CITIES[home],ac=CITIES[away];
+  if(hc&&ac){
+    travelMi=Math.round(haversine(hc.lat,hc.lon,ac.lat,ac.lon));
+    if(travelMi>1500)factors.push({type:"travel",team:away,label:`${travelMi}mi`,detail:`${away} coast-to-coast travel (${travelMi}mi)`,impact:-2,color:T.red});
+    else if(travelMi>800)factors.push({type:"travel",team:away,label:`${travelMi}mi`,detail:`${away} traveled ${travelMi} miles`,impact:-1,color:T.orn});
+
+    // Timezone shift
+    const tz=Math.abs(Math.round((hc.lon-ac.lon)/15));
+    if(tz>=2)factors.push({type:"tz",team:away,label:`${tz}hr TZ`,detail:`${away} crossing ${tz} time zones`,impact:-1,color:T.orn});
+  }
+
+  // ── Compound: B2B + travel ──
+  if(b2bA&&travelMi&&travelMi>500){
+    factors.push({type:"compound",team:away,label:"B2B+Travel",detail:`${away} back-to-back AND traveled ${travelMi}mi — extreme fatigue risk`,impact:-3,color:T.red});
+  }
+
+  return{factors,restH,restA,b2bH,b2bA,travelMi};
+}
+
+// ════════════════════════════════════════════════════════════════
+// §7  SHARPLINE SCORING ENGINE
+// ════════════════════════════════════════════════════════════════
+
+function scoreGame(game,research){
+  const w={edge:.30,sharp:.25,juice:.15,move:.10,research:.10,half:.10};
+  const s={edge:0,sharp:0,juice:0,move:0,research:0,half:0};
+
+  // Edge score (0-100) — best available edge across all markets
+  const maxE=Math.max(game.bestSpreadEdge||0,game.bestTotalEdge||0,game.bestMlEdge||0);
+  s.edge=Math.min(maxE*15,100);
+
+  // Sharp consensus (0-100) — are sharp books in play?
+  if(game.conSrc==="sharp")s.sharp=Math.min(game.sharpN*25,100);
+
+  // Juice signal (0-100) — vig asymmetry
+  if(game.juiceSig)s.juice=Math.min(game.juiceSig.strength*20,100);
+
+  // Line movement (0-100)
+  if(game.movement){
+    const mv=Math.abs(game.movement.spreadDelta||0);
+    s.move=Math.min(mv*40,100);
+  }
+
+  // Research (0-100)
+  if(research&&research.factors.length){
+    const tot=research.factors.reduce((a,f)=>a+Math.abs(f.impact),0);
+    s.research=Math.min(tot*15,100);
+  }
+
+  // Half-point value (0-100)
+  if(game.halfPtVal)s.half=Math.min(game.halfPtVal*20,100);
+
+  let total=0;
+  for(const[k,v]of Object.entries(w))total+=(s[k]||0)*v;
+  const grade=total>=70?"A":total>=55?"B":total>=40?"C":total>=25?"D":"F";
+  return{total:Math.round(total),parts:s,grade};
+}
+
+// ════════════════════════════════════════════════════════════════
+// §8  BET RECOMMENDATION ENGINE
+// ════════════════════════════════════════════════════════════════
+
+function genRecs(game,research){
+  const recs=[];
+  const add=(type,side,line,odds,book,edge,reasons)=>{
+    const conf=edge>=5?"HIGH":edge>=3?"MEDIUM":edge>=1.5?"LOW":null;
+    if(!conf)return;
+    recs.push({type,side,line,odds,book,edge:+edge.toFixed(1),units:suggestUnits(edge),conf,reasons});
   };
-  return (mockGames[sportKey] || []).map(g => {
-    const bookLines = g.books.map(b => ({ book:b.n, spread:b.sp, spreadOdds:b.so, total:b.tot, totalOdds:b.too, underOdds:b.uto, awaySpread:-b.sp }));
-    const sharpLines = bookLines.filter(bl => SHARP_BOOKS.includes(bl.book));
-    const useSharp = sharpLines.length >= 2;
-    const consensusLines = useSharp ? sharpLines : bookLines;
-    const sharpSpreadOdds = Math.round(median(consensusLines.filter(bl=>bl.spreadOdds).map(bl=>bl.spreadOdds))) || -110;
-    const sharpTotalOdds = Math.round(median(consensusLines.filter(bl=>bl.totalOdds).map(bl=>bl.totalOdds))) || -110;
-    const edges = bookLines.map(bl => ({ book:bl.book, spreadEdge:bl.spreadOdds?Math.max(0,calcEdge(bl.spreadOdds,sharpSpreadOdds)):0, totalEdge:bl.totalOdds?Math.max(0,calcEdge(bl.totalOdds,sharpTotalOdds)):0 }));
-    return { id:g.id, away:g.away, home:g.home, time:g.time, dayKey:getDayKey(g.time), dayLabel:getDayLabel(g.time), bookLines, edges, maxSpreadEdge:Math.max(...edges.map(e=>e.spreadEdge),0), maxTotalEdge:Math.max(...edges.map(e=>e.totalEdge),0), sharpSpreadOdds, sharpTotalOdds, consensusSource:useSharp?"sharp":"market", live:g.time<=new Date() };
+
+  // Helper: gather research reasons for a side
+  const resFor=(team,opp)=>{
+    if(!research)return[];
+    const r=[];
+    research.factors.filter(f=>f.team===team&&f.impact>0).forEach(f=>r.push(f.detail));
+    research.factors.filter(f=>f.team===opp&&f.impact<0).forEach(f=>r.push(f.detail));
+    return r;
+  };
+
+  // ── Spread recs ──
+  if(game.spreadLines){
+    for(const sl of game.spreadLines){
+      if(sl.bestAwayEdge>1.5){
+        const r=[`${sl.bestAwayEdge.toFixed(1)}% edge vs ${game.conSrc} consensus`];
+        if(sl.bestAwayBook)r.push(`Best number at ${sl.bestAwayBook}`);
+        r.push(...resFor(game.away_team,game.home_team));
+        add("Spread",game.away_team,sl.awaySpread,sl.bestAwayOdds,sl.bestAwayBook,sl.bestAwayEdge,r);
+      }
+      if(sl.bestHomeEdge>1.5){
+        const r=[`${sl.bestHomeEdge.toFixed(1)}% edge vs ${game.conSrc} consensus`];
+        if(sl.bestHomeBook)r.push(`Best number at ${sl.bestHomeBook}`);
+        r.push(...resFor(game.home_team,game.away_team));
+        add("Spread",game.home_team,sl.homeSpread,sl.bestHomeOdds,sl.bestHomeBook,sl.bestHomeEdge,r);
+      }
+    }
+  }
+
+  // ── Total recs ──
+  if(game.totalLines){
+    for(const tl of game.totalLines){
+      if(tl.bestOverEdge>1.5){
+        const r=[`${tl.bestOverEdge.toFixed(1)}% edge on Over ${tl.total}`];
+        if(tl.bestOverBook)r.push(`Best number at ${tl.bestOverBook}`);
+        if(research){
+          const fatigue=research.factors.filter(f=>f.type==="compound"||f.label==="B2B");
+          if(fatigue.length)r.push("Fatigue factor may slow pace — caution on Over");
+        }
+        add("Total","Over",tl.total,tl.bestOverOdds,tl.bestOverBook,tl.bestOverEdge,r);
+      }
+      if(tl.bestUnderEdge>1.5){
+        const r=[`${tl.bestUnderEdge.toFixed(1)}% edge on Under ${tl.total}`];
+        if(tl.bestUnderBook)r.push(`Best number at ${tl.bestUnderBook}`);
+        add("Total","Under",tl.total,tl.bestUnderOdds,tl.bestUnderBook,tl.bestUnderEdge,r);
+      }
+    }
+  }
+
+  // ── Moneyline recs (only if meaningful edge) ──
+  if(game.mlData){
+    const ml=game.mlData;
+    if(ml.bestAwayEdge>2)add("ML",game.away_team,"",ml.bestAwayOdds,ml.bestAwayBook,ml.bestAwayEdge,[`${ml.bestAwayEdge.toFixed(1)}% ML edge at ${ml.bestAwayBook}`]);
+    if(ml.bestHomeEdge>2)add("ML",game.home_team,"",ml.bestHomeOdds,ml.bestHomeBook,ml.bestHomeEdge,[`${ml.bestHomeEdge.toFixed(1)}% ML edge at ${ml.bestHomeBook}`]);
+  }
+
+  recs.sort((a,b)=>b.edge-a.edge);
+  return recs;
+}
+
+// ════════════════════════════════════════════════════════════════
+// §9  DATA PROCESSING
+// ════════════════════════════════════════════════════════════════
+
+function processGames(raw,myBooks){
+  return raw.map(g=>{
+    const bms=g.bookmakers||[];
+    const sharpBms=bms.filter(b=>SHARP_BOOKS.includes(b.key));
+    const useSh=sharpBms.length>=MIN_SHARP;
+    const conBms=useSh?sharpBms:bms;
+    const conSrc=useSh?"sharp":"market";
+    const sportType=SPORTS.find(s=>s.key===g.sport_key)?.type||"";
+
+    // Helper: does user have this book?
+    const hasBook=title=>!myBooks.length||myBooks.some(mb=>title.toLowerCase().includes(mb.toLowerCase()));
+
+    // ── SPREADS ──
+    const spreadMap=new Map();
+    const shSpOdds=[];
+
+    for(const bm of bms){
+      const mk=bm.markets?.find(m=>m.key==="spreads");
+      if(!mk)continue;
+      const aw=mk.outcomes?.find(o=>o.name===g.away_team);
+      const hm=mk.outcomes?.find(o=>o.name===g.home_team);
+      if(!aw||!hm)continue;
+      const k=`${aw.point}`;
+      if(!spreadMap.has(k))spreadMap.set(k,[]);
+      spreadMap.get(k).push({book:bm.title,bk:bm.key,awSp:aw.point,hmSp:hm.point,awOd:aw.price,hmOd:hm.price});
+    }
+    for(const bm of conBms){
+      const mk=bm.markets?.find(m=>m.key==="spreads");
+      if(!mk)continue;
+      const aw=mk.outcomes?.find(o=>o.name===g.away_team);
+      if(aw)shSpOdds.push(aw.price);
+    }
+    const shSpMed=median(shSpOdds);
+
+    const spreadLines=[];
+    for(const[,entries]of spreadMap){
+      let bAE=0,bHE=0,bAB="",bHB="",bAO=0,bHO=0;
+      for(const e of entries){
+        if(!hasBook(e.book))continue;
+        const ae=calcEdge(e.awOd,shSpMed),he=calcEdge(e.hmOd,shSpMed);
+        if(ae>bAE){bAE=ae;bAB=e.book;bAO=e.awOd;}
+        if(he>bHE){bHE=he;bHB=e.book;bHO=e.hmOd;}
+      }
+      spreadLines.push({...entries[0],entries,bestAwayEdge:bAE,bestHomeEdge:bHE,bestAwayBook:bAB,bestHomeBook:bHB,bestAwayOdds:bAO,bestHomeOdds:bHO,awaySpread:entries[0].awSp,homeSpread:entries[0].hmSp});
+    }
+
+    // ── TOTALS ──
+    const totalMap=new Map();
+    const shToOdds=[];
+
+    for(const bm of bms){
+      const mk=bm.markets?.find(m=>m.key==="totals");
+      if(!mk)continue;
+      const ov=mk.outcomes?.find(o=>o.name==="Over");
+      const un=mk.outcomes?.find(o=>o.name==="Under");
+      if(!ov||!un)continue;
+      const k=`${ov.point}`;
+      if(!totalMap.has(k))totalMap.set(k,[]);
+      totalMap.get(k).push({book:bm.title,bk:bm.key,total:ov.point,ovOd:ov.price,unOd:un.price});
+    }
+    for(const bm of conBms){
+      const mk=bm.markets?.find(m=>m.key==="totals");
+      if(!mk)continue;
+      const ov=mk.outcomes?.find(o=>o.name==="Over");
+      if(ov)shToOdds.push(ov.price);
+    }
+    const shToMed=median(shToOdds);
+
+    const totalLines=[];
+    for(const[,entries]of totalMap){
+      let bOE=0,bUE=0,bOB="",bUB="",bOO=0,bUO=0;
+      for(const e of entries){
+        if(!hasBook(e.book))continue;
+        const oe=calcEdge(e.ovOd,shToMed),ue=calcEdge(e.unOd,shToMed);
+        if(oe>bOE){bOE=oe;bOB=e.book;bOO=e.ovOd;}
+        if(ue>bUE){bUE=ue;bUB=e.book;bUO=e.unOd;}
+      }
+      totalLines.push({...entries[0],entries,bestOverEdge:bOE,bestUnderEdge:bUE,bestOverBook:bOB,bestUnderBook:bUB,bestOverOdds:bOO,bestUnderOdds:bUO});
+    }
+
+    // ── MONEYLINES ──
+    const shMlAw=[],shMlHm=[];
+    for(const bm of conBms){
+      const mk=bm.markets?.find(m=>m.key==="h2h");
+      if(!mk)continue;
+      const aw=mk.outcomes?.find(o=>o.name===g.away_team);
+      const hm=mk.outcomes?.find(o=>o.name===g.home_team);
+      if(aw)shMlAw.push(aw.price);
+      if(hm)shMlHm.push(hm.price);
+    }
+    const shMlAwMed=median(shMlAw),shMlHmMed=median(shMlHm);
+
+    let mlData={entries:[],bestAwayEdge:0,bestHomeEdge:0,bestAwayBook:"",bestHomeBook:"",bestAwayOdds:0,bestHomeOdds:0};
+    for(const bm of bms){
+      const mk=bm.markets?.find(m=>m.key==="h2h");
+      if(!mk)continue;
+      const aw=mk.outcomes?.find(o=>o.name===g.away_team);
+      const hm=mk.outcomes?.find(o=>o.name===g.home_team);
+      if(!aw||!hm)continue;
+      mlData.entries.push({book:bm.title,bk:bm.key,awOd:aw.price,hmOd:hm.price});
+      if(!hasBook(bm.title))continue;
+      const ae=shMlAwMed?calcEdge(aw.price,shMlAwMed):0;
+      const he=shMlHmMed?calcEdge(hm.price,shMlHmMed):0;
+      if(ae>mlData.bestAwayEdge){mlData.bestAwayEdge=ae;mlData.bestAwayBook=bm.title;mlData.bestAwayOdds=aw.price;}
+      if(he>mlData.bestHomeEdge){mlData.bestHomeEdge=he;mlData.bestHomeBook=bm.title;mlData.bestHomeOdds=hm.price;}
+    }
+
+    // ── Juice Signal ──
+    let juiceSig=null;
+    const jAw=[],jHm=[];
+    for(const bm of bms){
+      const mk=bm.markets?.find(m=>m.key==="spreads");
+      if(!mk)continue;
+      const aw=mk.outcomes?.find(o=>o.name===g.away_team);
+      const hm=mk.outcomes?.find(o=>o.name===g.home_team);
+      if(aw)jAw.push(aw.price);
+      if(hm)jHm.push(hm.price);
+    }
+    if(jAw.length>=3){
+      const avgA=jAw.reduce((a,b)=>a+b,0)/jAw.length;
+      const avgH=jHm.reduce((a,b)=>a+b,0)/jHm.length;
+      const diff=Math.abs(avgA-avgH);
+      if(diff>3)juiceSig={side:avgA<avgH?g.away_team:g.home_team,strength:Math.min(Math.round(diff),10),detail:`Vig loaded toward ${avgA<avgH?g.away_team:g.home_team} (avg diff: ${diff.toFixed(0)})`};
+    }
+
+    // ── Half-point value ──
+    let halfPtVal=0;
+    const keyNums=sportType==="football"?[3,7,10,6,14,1,4]:sportType==="basketball"?[3,5,7,8]:[1,1.5];
+    if(spreadLines.length){
+      const spreads=[...new Set(spreadLines.map(s=>Math.abs(s.awaySpread)))];
+      for(const sp of spreads){
+        if(keyNums.some(k=>Math.abs(sp-k)<=0.5&&sp!==k)){
+          halfPtVal=Math.max(halfPtVal,sportType==="football"?4:2);
+        }
+      }
+    }
+
+    const bestSpreadEdge=spreadLines.length?Math.max(...spreadLines.map(s=>Math.max(s.bestAwayEdge,s.bestHomeEdge))):0;
+    const bestTotalEdge=totalLines.length?Math.max(...totalLines.map(t=>Math.max(t.bestOverEdge,t.bestUnderEdge))):0;
+    const bestMlEdge=Math.max(mlData.bestAwayEdge,mlData.bestHomeEdge);
+
+    return{
+      ...g,spreadLines,totalLines,mlData,
+      shSpMed,shToMed,shMlAwMed,shMlHmMed,
+      conSrc,sharpN:sharpBms.length,
+      juiceSig,halfPtVal,
+      bestSpreadEdge,bestTotalEdge,bestMlEdge,
+    };
   });
 }
 
-// ─── API FETCH ───
-async function fetchOdds(sportApiKey) {
-  if (API_DISCONNECTED) { await new Promise(r=>setTimeout(r,600)); return { games:null, remaining:null, error:null, mock:true }; }
-  const url = `${API_BASE}/odds?sport=${sportApiKey}&markets=spreads,totals`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) { const rem=res.headers.get("x-requests-remaining"); return { games:[], remaining:rem?parseInt(rem):null, error:res.status===401?"Invalid API key":res.status===429?"Rate limited":`Error ${res.status}` }; }
-    const data = await res.json();
-    return { games:data, remaining:parseInt(res.headers.get("x-requests-remaining")||"0"), error:null };
-  } catch(err) { return { games:[], remaining:null, error:"Network error" }; }
-}
+// ════════════════════════════════════════════════════════════════
+// §10  MAIN APP
+// ════════════════════════════════════════════════════════════════
 
-function parseApiGames(apiGames) {
-  return apiGames.map(g => {
-    const time = new Date(g.commence_time);
-    const bookMap = {};
-    (g.bookmakers||[]).forEach(bm => {
-      const name = BOOK_MAP[bm.key]||bm.title;
-      if (!bookMap[name]) bookMap[name] = { book:name, spread:null, spreadOdds:null, total:null, totalOdds:null, underOdds:null };
-      (bm.markets||[]).forEach(m => {
-        if (m.key==="spreads") { const h=m.outcomes.find(o=>o.name===g.home_team); const a=m.outcomes.find(o=>o.name===g.away_team); if(h){bookMap[name].spread=h.point;bookMap[name].spreadOdds=h.price;bookMap[name].awaySpread=a?a.point:-h.point;} }
-        if (m.key==="totals") { const ov=m.outcomes.find(o=>o.name==="Over"); const un=m.outcomes.find(o=>o.name==="Under"); if(ov){bookMap[name].total=ov.point;bookMap[name].totalOdds=ov.price;} if(un)bookMap[name].underOdds=un.price; }
+function SharpLine(){
+  const[tab,setTab]=useState("scanner");
+  const[sport,setSport]=useState("basketball_nba");
+  const[games,setGames]=useState([]);
+  const[loading,setLoading]=useState(false);
+  const[credits,setCredits]=useState(null);
+  const[expanded,setExpanded]=useState(null);
+  const[bets,setBets]=useState([]);
+  const[bankroll,setBankroll]=useState(()=>+(localStorage.getItem("sl-bankroll")||0));
+  const[myBooks,setMyBooks]=useState(()=>{try{return JSON.parse(localStorage.getItem("sl-books")||"[]")}catch{return[]}});
+  const[cache,setCache]=useState({});
+  const[firstSeen,setFirstSeen]=useState({});
+  const[scores,setScores]=useState({});
+  const[clvIn,setClvIn]=useState({});
+  const[manBet,setManBet]=useState(null);
+  const[gView,setGView]=useState("spread");
+
+  const unitSz=bankroll>0?Math.round(bankroll*0.01):0;
+
+  // Load bets from Supabase
+  useEffect(()=>{dbLoad().then(b=>setBets(b))},[]);
+  useEffect(()=>{localStorage.setItem("sl-bankroll",bankroll)},[bankroll]);
+  useEffect(()=>{localStorage.setItem("sl-books",JSON.stringify(myBooks))},[myBooks]);
+
+  // ── Fetch odds (MANUAL ONLY) ──
+  const fetchOdds=useCallback(async()=>{
+    setLoading(true);
+    try{
+      const res=await fetch(`/api/odds?sport=${sport}&markets=spreads,totals,h2h`);
+      const data=await res.json();
+      const rem=res.headers.get("x-requests-remaining");
+      if(rem)setCredits(+rem);
+
+      const proc=processGames(data,myBooks);
+
+      // First-seen for line movement
+      setFirstSeen(prev=>{
+        const n={...prev};
+        for(const g of proc){
+          if(!n[g.id])n[g.id]={sp:g.spreadLines[0]?.awaySpread,to:g.totalLines[0]?.total,t:Date.now()};
+        }
+        return n;
       });
-    });
-    const bookLines = Object.values(bookMap).filter(bl=>bl.spreadOdds!==null||bl.totalOdds!==null);
-    const sharpLines = bookLines.filter(bl=>SHARP_BOOKS.includes(bl.book));
-    const useSharp = sharpLines.length >= 2;
-    const cl = useSharp ? sharpLines : bookLines;
-    const sharpSpreadOdds = Math.round(median(cl.filter(bl=>bl.spreadOdds).map(bl=>bl.spreadOdds)))||-110;
-    const sharpTotalOdds = Math.round(median(cl.filter(bl=>bl.totalOdds).map(bl=>bl.totalOdds)))||-110;
-    const edges = bookLines.map(bl=>({ book:bl.book, spreadEdge:bl.spreadOdds?Math.max(0,calcEdge(bl.spreadOdds,sharpSpreadOdds)):0, totalEdge:bl.totalOdds?Math.max(0,calcEdge(bl.totalOdds,sharpTotalOdds)):0 }));
-    return { id:g.id, away:g.away_team, home:g.home_team, time, dayKey:getDayKey(time), dayLabel:getDayLabel(time), bookLines, edges, maxSpreadEdge:Math.max(...edges.map(e=>e.spreadEdge),0), maxTotalEdge:Math.max(...edges.map(e=>e.totalEdge),0), sharpSpreadOdds, sharpTotalOdds, consensusSource:useSharp?"sharp":"market", live:time<=new Date() };
-  });
-}
 
-function getBookEdges(game,bf) {
-  if(bf==="ALL") return {spreadEdge:game.maxSpreadEdge,totalEdge:game.maxTotalEdge};
-  return game.edges.find(x=>x.book===bf)||{spreadEdge:0,totalEdge:0};
-}
+      // Attach movement
+      for(const g of proc){
+        const fs=firstSeen[g.id];
+        if(fs){
+          const cSp=g.spreadLines[0]?.awaySpread;
+          const cTo=g.totalLines[0]?.total;
+          if(cSp!==undefined&&fs.sp!==undefined){
+            g.movement={spreadDelta:cSp-fs.sp,totalDelta:(cTo||0)-(fs.to||0),firstSp:fs.sp,firstTo:fs.to};
+          }
+        }
+      }
 
-// ─── COMPONENTS ───
-function EdgeBadge({edge,T}){
-  if(edge>=5) return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:800,fontFamily:F.mono,background:"rgba(63,185,80,0.25)",color:"#2ee06e",border:"1px solid rgba(63,185,80,0.5)"}}>▲ {edge.toFixed(1)}%</span>;
-  if(edge>=3) return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:800,fontFamily:F.mono,background:"rgba(230,170,20,0.2)",color:"#f0b820",border:"1px solid rgba(230,170,20,0.45)"}}>● {edge.toFixed(1)}%</span>;
-  return <span style={{padding:"3px 8px",borderRadius:4,fontSize:11,fontWeight:600,fontFamily:F.mono,background:T.bg,color:T.muted,border:`1px solid ${T.border}`}}>{edge.toFixed(1)}%</span>;
-}
+      setGames(proc);
+      setCache(prev=>({...prev,[sport]:{data:proc,time:Date.now()}}));
 
-function ConfBadge({conf,T}){
-  const cfg=conf==="HIGH"?{bg:"rgba(63,185,80,0.2)",color:"#2ee06e",border:"rgba(63,185,80,0.5)"}:conf==="MEDIUM"?{bg:"rgba(230,170,20,0.2)",color:"#f0b820",border:"rgba(230,170,20,0.45)"}:{bg:`${T.muted}15`,color:T.muted,border:T.border};
-  return <span style={{padding:"2px 7px",borderRadius:3,fontSize:10,fontWeight:800,fontFamily:F.mono,background:cfg.bg,color:cfg.color,border:`1px solid ${cfg.border}`}}>{conf}</span>;
-}
+      // Fetch scores for research
+      if(!scores[sport]){
+        try{
+          const sr=await fetch(`/api/research?sport=${sport}&type=scores`);
+          const sd=await sr.json();
+          if(Array.isArray(sd))setScores(prev=>({...prev,[sport]:sd}));
+        }catch(e){console.warn("Scores:",e);}
+      }
+    }catch(err){console.error("Fetch:",err);}
+    setLoading(false);
+  },[sport,myBooks,firstSeen,scores]);
 
-function LineMovement({current,first,T}){
-  if(!first||current===first) return <span style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>{current}</span>;
-  const up = typeof current==="number"&&typeof first==="number" ? current>first : false;
-  return <span style={{color:up?"#f0b820":T.green,fontSize:9,fontFamily:F.mono,fontWeight:700}} title={`Opened: ${first}`}>{current} <span style={{fontSize:8}}>{up?"↑":"↓"}{first}</span></span>;
-}
+  // Load from cache on sport switch
+  useEffect(()=>{
+    if(cache[sport])setGames(cache[sport].data);
+    else setGames([]);
+  },[sport]);
 
-function RecommendationPanel({game,myBooks,lineHistory,onAddBet,T}){
-  const [open,setOpen]=useState(false);
-  const recs=useMemo(()=>generateRecommendation(game,myBooks,lineHistory),[game,myBooks,lineHistory]);
-  if(recs.length===0) return null;
-  const top=recs[0];
-  return (
-    <div style={{marginTop:10,background:`${T.gold}08`,border:`1px solid ${T.gold}30`,borderRadius:4,overflow:"hidden"}}>
-      <div onClick={e=>{e.stopPropagation();setOpen(!open);}} style={{padding:"8px 10px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <span style={{color:T.gold,fontSize:9,fontWeight:800,fontFamily:F.mono,letterSpacing:1}}>⚡ SHARP CALL</span>
-          <ConfBadge conf={top.conf} T={T}/>
-          <span style={{color:T.text,fontSize:11,fontWeight:600}}>{top.call}</span>
+  // Enrich with research + scoring + recs
+  const enriched=useMemo(()=>{
+    return games.map(g=>{
+      const research=analyzeResearch(g,scores[sport]||[]);
+      const score=scoreGame(g,research);
+      const recs=genRecs(g,research);
+      return{...g,research,score,recs};
+    }).sort((a,b)=>b.score.total-a.score.total);
+  },[games,scores,sport]);
+
+  // ── Bet actions ──
+  const trackBet=async bet=>{
+    const id=await dbAdd(bet);
+    if(id)setBets(prev=>[{...bet,id},...prev]);
+  };
+  const updateResult=async(id,result)=>{
+    await dbUpdate(id,{result});
+    setBets(prev=>prev.map(b=>b.id===id?{...b,result}:b));
+  };
+  const enterCLV=async(id,closingOdds)=>{
+    const bet=bets.find(b=>b.id===id);
+    if(!bet)return;
+    const clv=calcCLV(bet.entryOdds||bet.odds,closingOdds);
+    await dbUpdate(id,{closingOdds,clv});
+    setBets(prev=>prev.map(b=>b.id===id?{...b,closingOdds,clv}:b));
+  };
+  const deleteBet=async id=>{
+    await dbDel(id);
+    setBets(prev=>prev.filter(b=>b.id!==id));
+  };
+
+  // ── Stats ──
+  const stats=useMemo(()=>{
+    const settled=bets.filter(b=>b.result==="W"||b.result==="L");
+    const W=settled.filter(b=>b.result==="W").length;
+    const L=settled.filter(b=>b.result==="L").length;
+    const P=bets.filter(b=>b.result==="P").length;
+    const clvB=bets.filter(b=>b.clv!=null);
+    const avgClv=clvB.length?clvB.reduce((s,b)=>s+b.clv,0)/clvB.length:0;
+    let wagered=0,returned=0;
+    for(const b of settled){
+      const w=(b.units||1)*(unitSz||100);
+      wagered+=w;
+      if(b.result==="W")returned+=w*a2d(b.odds);
+    }
+    const roi=wagered?((returned-wagered)/wagered*100):0;
+    const profit=returned-wagered;
+    const bySport={},byType={};
+    for(const b of bets){
+      if(!bySport[b.sport])bySport[b.sport]={n:0,w:0,l:0};
+      bySport[b.sport].n++;if(b.result==="W")bySport[b.sport].w++;if(b.result==="L")bySport[b.sport].l++;
+      if(!byType[b.type])byType[b.type]={n:0,w:0,l:0};
+      byType[b.type].n++;if(b.result==="W")byType[b.type].w++;if(b.result==="L")byType[b.type].l++;
+    }
+    return{W,L,P,total:bets.length,settled:settled.length,wr:settled.length?(W/settled.length*100):0,avgClv,clvN:clvB.length,roi,profit,wagered,bySport,byType};
+  },[bets,unitSz]);
+
+  // ════════════════════════════════════════════════════════════
+  // UI COMPONENTS
+  // ════════════════════════════════════════════════════════════
+
+  const Badge=({children,bg,color,style:s})=>(
+    <span style={{display:"inline-flex",alignItems:"center",padding:"2px 7px",borderRadius:3,fontSize:10,fontWeight:700,fontFamily:F.m,background:bg||T.bdr,color:color||T.tx,letterSpacing:".02em",...s}}>{children}</span>
+  );
+
+  const Btn=({children,onClick,pri,sm,dis,style:s})=>(
+    <button disabled={dis} onClick={onClick} style={{padding:sm?"4px 10px":"8px 16px",borderRadius:4,border:"none",fontSize:sm?10:12,fontWeight:700,fontFamily:F.m,cursor:dis?"not-allowed":"pointer",opacity:dis?.4:1,background:pri?T.gold:T.bdr,color:pri?"#0a0e14":T.tx,transition:"all .15s",...s}}>{children}</button>
+  );
+
+  // ════════════════════════════════════════════════════════════
+  // GAME CARD
+  // ════════════════════════════════════════════════════════════
+
+  const GameCard=({game:g,index:idx})=>{
+    const exp=expanded===g.id;
+    const bestE=Math.max(g.bestSpreadEdge,g.bestTotalEdge,g.bestMlEdge);
+    const time=new Date(g.commence_time).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"});
+    const res=g.research,sc=g.score,recs=g.recs;
+
+    return(
+      <div className="fade-up" style={{animationDelay:`${idx*40}ms`,background:T.card,border:`1px solid ${bestE>3?T.gold+"40":T.bdr}`,borderRadius:8,marginBottom:8,overflow:"hidden"}}>
+        {/* Header */}
+        <div onClick={()=>setExpanded(exp?null:g.id)} style={{padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:13,fontWeight:700,color:T.txB,marginBottom:3}}>{g.away_team} <span style={{color:T.mut,fontWeight:400}}>@</span> {g.home_team}</div>
+            <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{fontSize:10,color:T.mut,fontFamily:F.m}}>{time}</span>
+              {sc&&<Badge bg={sc.grade==="A"?T.grnB:sc.grade==="B"?T.bluB:sc.grade==="C"?T.ornB:T.bdr} color={sc.grade==="A"?T.grn:sc.grade==="B"?T.blu:sc.grade==="C"?T.orn:T.mut}>{sc.grade}·{sc.total}</Badge>}
+              {bestE>1.5&&<Badge bg={bestE>4?T.gold+"20":T.grnB} color={bestE>4?T.gold:T.grn}>{bestE.toFixed(1)}%</Badge>}
+              {recs.length>0&&<Badge bg={T.gold+"15"} color={T.gold}>⚡{recs.length}</Badge>}
+              {res&&res.factors.length>0&&<Badge bg={T.purB} color={T.pur}>📋{res.factors.length}</Badge>}
+              {g.movement&&Math.abs(g.movement.spreadDelta)>0&&<Badge bg={T.bluB} color={T.blu}>{g.movement.spreadDelta>0?"↑":"↓"}{Math.abs(g.movement.spreadDelta).toFixed(1)}</Badge>}
+              {g.conSrc==="sharp"&&<Badge bg={T.grnB} color={T.grn}>SHARP</Badge>}
+            </div>
+          </div>
+          <span style={{color:T.mut,fontSize:16,transform:exp?"rotate(180deg)":"none",transition:"transform .2s"}}>▾</span>
         </div>
-        <span style={{color:T.muted,fontSize:12,transform:open?"rotate(180deg)":"none",transition:"0.15s"}}>▾</span>
-      </div>
-      {open&&<div style={{borderTop:`1px solid ${T.gold}20`,padding:"8px 10px"}}>
-        {recs.map((rec,i)=>(
-          <div key={i} style={{marginBottom:i<recs.length-1?10:0,paddingBottom:i<recs.length-1?10:0,borderBottom:i<recs.length-1?`1px solid ${T.border}`:""}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4}}>
-              <div>
-                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}><ConfBadge conf={rec.conf} T={T}/><span style={{color:T.text,fontSize:11,fontWeight:700,fontFamily:F.mono}}>{rec.call}</span></div>
-                <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:4}}>
-                  {rec.reasons.map((r,j)=><span key={j} style={{fontSize:9,fontFamily:F.mono,padding:"2px 6px",borderRadius:2,background:`${T.muted}12`,color:T.dim,border:`1px solid ${T.border}`}}>{r}</span>)}
+
+        {/* Expanded Detail */}
+        {exp&&(
+          <div style={{padding:"0 14px 14px",borderTop:`1px solid ${T.bdr}`}}>
+
+            {/* Research Factors */}
+            {res&&res.factors.length>0&&(
+              <div style={{marginTop:12,marginBottom:12}}>
+                <div style={{fontSize:10,fontWeight:700,color:T.pur,fontFamily:F.m,marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>📋 Research Factors</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                  {res.factors.map((f,i)=>(
+                    <div key={i} style={{padding:"5px 9px",background:f.color+"15",border:`1px solid ${f.color}30`,borderRadius:4,fontSize:10,fontFamily:F.m}}>
+                      <span style={{color:f.color,fontWeight:700}}>{f.label}</span>
+                      <span style={{color:T.mut,marginLeft:6}}>{f.detail}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
-              <button onClick={e=>{e.stopPropagation();onAddBet({game:`${game.away} @ ${game.home}`,type:rec.type,line:`${rec.line>0?"+":""}${rec.line}`,odds:rec.odds,book:rec.book,edge:rec.edge,units:rec.units,sport:game.id.split("-")[0]||"?",entryOdds:rec.odds});}}
-                style={{padding:"4px 10px",borderRadius:3,border:`1px solid ${rec.conf==="HIGH"?"rgba(46,224,110,0.4)":"rgba(240,184,32,0.4)"}`,background:rec.conf==="HIGH"?"rgba(46,224,110,0.1)":"rgba(240,184,32,0.08)",color:rec.conf==="HIGH"?"#2ee06e":"#f0b820",fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono,marginLeft:8,flexShrink:0}}>
-                + TRACK {rec.units}u
-              </button>
-            </div>
-            <div style={{color:T.muted,fontSize:9,fontFamily:F.mono}}>Score: {rec.score}/100 · {rec.units}u recommended · edge {rec.edge.toFixed(1)}%</div>
-          </div>
-        ))}
-      </div>}
-    </div>
-  );
-}
+            )}
 
-function GameCard({game,bookFilter,onAddBet,bankroll,unitSize,T,myBooks,lineHistory}){
-  const [open,setOpen]=useState(false);
-  const be=getBookEdges(game,bookFilter);
-  const hasStrong=be.spreadEdge>=5||be.totalEdge>=5;
-  const hasValue=be.spreadEdge>=3||be.totalEdge>=3;
-  const visibleBooks=game.bookLines.filter(bl=>myBooks.includes(bl.book));
-  const visibleEdges=game.edges.filter(e=>myBooks.includes(e.book));
-  return (
-    <div onClick={()=>setOpen(!open)} style={{background:T.card,border:`1px solid ${hasStrong?"rgba(63,185,80,0.3)":hasValue?"rgba(230,170,20,0.25)":T.border}`,borderRadius:6,padding:"12px 14px",cursor:"pointer",marginBottom:4,borderLeft:`4px solid ${hasStrong?"#2ee06e":hasValue?"#f0b820":"transparent"}`,transition:"all 0.15s"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div>
-          <div style={{display:"flex",alignItems:"center",gap:6}}>
-            {game.live&&<span style={{fontSize:8,padding:"1px 5px",borderRadius:3,background:T.redBg,color:T.red,fontFamily:F.mono,fontWeight:700}}>LIVE</span>}
-            <span style={{color:T.text,fontSize:13,fontWeight:600}}>{game.away}</span>
-            <span style={{color:T.muted,fontSize:10,fontFamily:F.mono}}>@</span>
-            <span style={{color:T.text,fontSize:13,fontWeight:600}}>{game.home}</span>
-          </div>
-          <div style={{color:T.muted,fontSize:10,fontFamily:F.mono,marginTop:3}}>{game.dayLabel} · {game.time.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}{visibleBooks.length>0&&<> · {visibleBooks.length} books</>}</div>
-        </div>
-        <div style={{display:"flex",gap:8,alignItems:"center"}}>
-          <div style={{textAlign:"center"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:2}}>SPR</div><EdgeBadge edge={be.spreadEdge} T={T}/></div>
-          <div style={{textAlign:"center"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:2}}>TOT</div><EdgeBadge edge={be.totalEdge} T={T}/></div>
-          <span style={{color:T.muted,fontSize:14,transform:open?"rotate(180deg)":"none",transition:"0.15s"}}>▾</span>
-        </div>
-      </div>
-      {open&&(
-        <div style={{marginTop:12,borderTop:`1px solid ${T.border}`,paddingTop:12}} onClick={e=>e.stopPropagation()}>
-          <div style={{marginBottom:8,padding:"4px 8px",background:`${T.muted}10`,borderRadius:3,display:"inline-block"}}>
-            <span style={{color:T.muted,fontSize:9,fontFamily:F.mono}}>{game.consensusSource==="sharp"?"Sharp":"Market"} consensus: spread {game.sharpSpreadOdds} · total {game.sharpTotalOdds}{game.consensusSource!=="sharp"&&<span style={{color:T.gold}}> · no sharp books</span>}</span>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr repeat(5,auto)",gap:"5px 14px",fontSize:10,fontFamily:F.mono}}>
-            {["BOOK","SPR","S.ODDS","TOTAL","O.ODDS","U.ODDS"].map(h=><div key={h} style={{color:T.muted,fontWeight:600,textAlign:h==="BOOK"?"left":"right"}}>{h}</div>)}
-            {visibleBooks.map(bl=>{
-              const be2=game.edges.find(e=>e.book===bl.book)||{spreadEdge:0,totalEdge:0};
-              const hist=lineHistory[game.id]?.[bl.book];
-              return <React.Fragment key={bl.book}>
-                <div style={{color:T.text}}>{short(bl.book)}</div>
-                <div style={{textAlign:"right"}}>{bl.spread!=null?<LineMovement current={`${bl.spread>0?"+":""}${bl.spread}`} first={hist?.spread!=null?`${hist.spread>0?"+":""}${hist.spread}`:null} T={T}/>:<span style={{color:T.muted}}>—</span>}</div>
-                <div style={{textAlign:"right",color:be2.spreadEdge>=5?"#2ee06e":be2.spreadEdge>=3?"#f0b820":T.dim,fontWeight:be2.spreadEdge>=3?700:400}}>{bl.spreadOdds||"—"}</div>
-                <div style={{textAlign:"right"}}>{bl.total?<LineMovement current={bl.total} first={hist?.total||null} T={T}/>:<span style={{color:T.muted}}>—</span>}</div>
-                <div style={{textAlign:"right",color:be2.totalEdge>=5?"#2ee06e":be2.totalEdge>=3?"#f0b820":T.dim,fontWeight:be2.totalEdge>=3?700:400}}>{bl.totalOdds||"—"}</div>
-                <div style={{textAlign:"right",color:T.dim}}>{bl.underOdds||"—"}</div>
-              </React.Fragment>;
-            })}
-          </div>
-          {visibleEdges.length>0&&<div style={{marginTop:10,display:"grid",gridTemplateColumns:`repeat(${Math.min(visibleEdges.length,6)},1fr)`,gap:4}}>
-            {visibleEdges.map(e=>(
-              <div key={e.book} style={{padding:"6px 8px",background:T.bg,borderRadius:3,border:`1px solid ${T.border}`,textAlign:"center"}}>
-                <div style={{color:T.muted,fontSize:8,fontFamily:F.mono,marginBottom:2}}>{short(e.book)}</div>
-                <div style={{display:"flex",justifyContent:"center",gap:8}}>
-                  <span style={{fontSize:9,fontFamily:F.mono,color:e.spreadEdge>=5?"#2ee06e":e.spreadEdge>=3?"#f0b820":T.muted,fontWeight:e.spreadEdge>=3?700:400}}>S:{e.spreadEdge.toFixed(1)}%</span>
-                  <span style={{fontSize:9,fontFamily:F.mono,color:e.totalEdge>=5?"#2ee06e":e.totalEdge>=3?"#f0b820":T.muted,fontWeight:e.totalEdge>=3?700:400}}>T:{e.totalEdge.toFixed(1)}%</span>
+            {/* Sharp Calls */}
+            {recs.length>0&&(
+              <div style={{marginTop:8,marginBottom:12}}>
+                <div style={{fontSize:10,fontWeight:700,color:T.gold,fontFamily:F.m,marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>⚡ Sharp Calls</div>
+                {recs.map((r,i)=>(
+                  <div key={i} style={{padding:"10px 12px",background:T.gold+"08",border:`1px solid ${T.gold}25`,borderRadius:6,marginBottom:6}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                      <div>
+                        <span style={{fontSize:13,fontWeight:800,color:T.txB}}>{r.type==="Total"?`${r.side} ${r.line}`:`${r.side} ${r.line}`}</span>
+                        <span style={{fontSize:11,color:T.gold,fontFamily:F.m,marginLeft:8}}>{r.odds>0?"+":""}{r.odds}</span>
+                        <span style={{fontSize:10,color:T.mut,fontFamily:F.m,marginLeft:8}}>@ {r.book}</span>
+                      </div>
+                      <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                        <Badge bg={r.conf==="HIGH"?T.grnB:r.conf==="MEDIUM"?T.ornB:T.bdr} color={r.conf==="HIGH"?T.grn:r.conf==="MEDIUM"?T.orn:T.mut}>{r.conf}</Badge>
+                        <Badge bg={T.gold+"20"} color={T.gold}>{r.edge}% · {r.units}u</Badge>
+                      </div>
+                    </div>
+                    <div style={{fontSize:10,color:T.mut,fontFamily:F.m,lineHeight:1.6}}>
+                      {r.reasons.map((reason,ri)=><div key={ri}>· {reason}</div>)}
+                    </div>
+                    <Btn sm pri style={{marginTop:8}} onClick={()=>trackBet({
+                      sport:SPORTS.find(s=>s.key===sport)?.label||sport,
+                      game:`${g.away_team} @ ${g.home_team}`,
+                      type:r.type,line:String(r.line||""),odds:r.odds,
+                      book:r.book,edge:r.edge,units:r.units,entryOdds:r.odds,
+                    })}>+ Track This Bet</Btn>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Market View Tabs */}
+            <div style={{display:"flex",gap:4,marginTop:8,marginBottom:8}}>
+              {["spread","total","ml"].map(v=>(
+                <span key={v} onClick={()=>setGView(v)} style={{padding:"4px 12px",borderRadius:3,fontSize:10,fontWeight:600,fontFamily:F.m,cursor:"pointer",background:gView===v?T.gold+"20":T.bdr,color:gView===v?T.gold:T.mut,textTransform:"uppercase"}}>{v==="ml"?"Moneyline":v}</span>
+              ))}
+            </div>
+
+            {/* ── SPREAD TABLE ── */}
+            {gView==="spread"&&g.spreadLines.map((sl,si)=>(
+              <div key={si} style={{marginBottom:8}}>
+                <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:4}}>
+                  Spread: {g.away_team} {sl.awaySpread>0?"+":""}{sl.awaySpread}
+                  {g.movement&&g.movement.spreadDelta!==0&&<span style={{color:T.blu,marginLeft:6}}>(was {g.movement.firstSp>0?"+":""}{g.movement.firstSp} → {g.movement.spreadDelta>0?"↑":"↓"}{Math.abs(g.movement.spreadDelta).toFixed(1)})</span>}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto",gap:1,fontSize:10,fontFamily:F.m}}>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700}}>Book</div>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Away</div>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Home</div>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Edge</div>
+                  <div style={{padding:"4px 6px"}}></div>
+                  {sl.entries.sort((a,b)=>b.awOd-a.awOd).map((e,ei)=>{
+                    const isSh=SHARP_BOOKS.includes(e.bk);
+                    const ae=calcEdge(e.awOd,g.shSpMed),he=calcEdge(e.hmOd,g.shSpMed);
+                    const best=ae>he?"away":"home";
+                    const thisE=Math.max(ae,he);
+                    return(
+                      <React.Fragment key={ei}>
+                        <div style={{padding:"5px 6px",color:isSh?T.grn:T.tx,background:ei%2?T.card2:"transparent",borderRadius:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.book}{isSh?" ★":""}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ae>1.5?T.grn:T.tx,fontWeight:ae>1.5?700:400}}>{e.awOd>0?"+":""}{e.awOd}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:he>1.5?T.grn:T.tx,fontWeight:he>1.5?700:400}}>{e.hmOd>0?"+":""}{e.hmOd}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>3?T.gold:thisE>1.5?T.grn:T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
+                        <div style={{padding:"3px 4px",background:ei%2?T.card2:"transparent"}}>
+                          {thisE>1.5&&<Btn sm pri onClick={()=>trackBet({
+                            sport:SPORTS.find(s=>s.key===sport)?.label||sport,
+                            game:`${g.away_team} @ ${g.home_team}`,
+                            type:"Spread",line:`${best==="away"?e.awSp:e.hmSp}`,
+                            odds:best==="away"?e.awOd:e.hmOd,book:e.book,
+                            edge:+thisE.toFixed(1),units:suggestUnits(thisE),
+                            entryOdds:best==="away"?e.awOd:e.hmOd,
+                          })}>+</Btn>}
+                        </div>
+                      </React.Fragment>
+                    );
+                  })}
                 </div>
               </div>
             ))}
-          </div>}
-          <RecommendationPanel game={game} myBooks={myBooks} lineHistory={lineHistory} onAddBet={onAddBet} T={T}/>
-          <div style={{marginTop:10,display:"flex",gap:4,flexWrap:"wrap"}}>
-            {visibleBooks.map(bl=>{
-              const be2=game.edges.find(e=>e.book===bl.book)||{spreadEdge:0,totalEdge:0};
-              const btnStyle=(edge)=>({padding:"4px 10px",borderRadius:3,border:`1px solid ${edge>=5?"rgba(46,224,110,0.4)":edge>=3?"rgba(240,184,32,0.4)":T.border}`,background:edge>=5?"rgba(46,224,110,0.1)":edge>=3?"rgba(240,184,32,0.08)":"transparent",color:edge>=5?"#2ee06e":edge>=3?"#f0b820":T.dim,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono});
-              return [
-                be2.spreadEdge>0&&bl.spreadOdds&&<button key={`s-${bl.book}`} onClick={e=>{e.stopPropagation();onAddBet({game:`${game.away} @ ${game.home}`,type:"Spread",line:`${bl.spread>0?"+":""}${bl.spread}`,odds:bl.spreadOdds,book:bl.book,edge:be2.spreadEdge,units:suggestUnits(be2.spreadEdge),sport:game.id.split("-")[0]||"?",entryOdds:bl.spreadOdds});}} style={btnStyle(be2.spreadEdge)}>+ {short(bl.book)} Spr {suggestUnits(be2.spreadEdge)}u</button>,
-                be2.totalEdge>0&&bl.totalOdds&&<button key={`t-${bl.book}`} onClick={e=>{e.stopPropagation();onAddBet({game:`${game.away} @ ${game.home}`,type:"Total",line:`${bl.total}`,odds:bl.totalOdds,book:bl.book,edge:be2.totalEdge,units:suggestUnits(be2.totalEdge),sport:game.id.split("-")[0]||"?",entryOdds:bl.totalOdds});}} style={btnStyle(be2.totalEdge)}>+ {short(bl.book)} Tot {suggestUnits(be2.totalEdge)}u</button>,
-              ];
-            })}
+
+            {/* ── TOTAL TABLE ── */}
+            {gView==="total"&&g.totalLines.map((tl,ti)=>(
+              <div key={ti} style={{marginBottom:8}}>
+                <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:4}}>
+                  Total: {tl.total}
+                  {g.movement&&g.movement.totalDelta!==0&&<span style={{color:T.blu,marginLeft:6}}>(was {g.movement.firstTo} → {g.movement.totalDelta>0?"↑":"↓"}{Math.abs(g.movement.totalDelta).toFixed(1)})</span>}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto",gap:1,fontSize:10,fontFamily:F.m}}>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700}}>Book</div>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Over</div>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Under</div>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Edge</div>
+                  <div style={{padding:"4px 6px"}}></div>
+                  {tl.entries.sort((a,b)=>b.ovOd-a.ovOd).map((e,ei)=>{
+                    const isSh=SHARP_BOOKS.includes(e.bk);
+                    const oe=calcEdge(e.ovOd,g.shToMed),ue=calcEdge(e.unOd,g.shToMed);
+                    const best=oe>ue?"over":"under";
+                    const thisE=Math.max(oe,ue);
+                    return(
+                      <React.Fragment key={ei}>
+                        <div style={{padding:"5px 6px",color:isSh?T.grn:T.tx,background:ei%2?T.card2:"transparent"}}>{e.book}{isSh?" ★":""}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:oe>1.5?T.grn:T.tx,fontWeight:oe>1.5?700:400}}>{e.ovOd>0?"+":""}{e.ovOd}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ue>1.5?T.grn:T.tx,fontWeight:ue>1.5?700:400}}>{e.unOd>0?"+":""}{e.unOd}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>3?T.gold:thisE>1.5?T.grn:T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
+                        <div style={{padding:"3px 4px",background:ei%2?T.card2:"transparent"}}>
+                          {thisE>1.5&&<Btn sm pri onClick={()=>trackBet({
+                            sport:SPORTS.find(s=>s.key===sport)?.label||sport,
+                            game:`${g.away_team} @ ${g.home_team}`,
+                            type:"Total",line:`${best==="over"?"O":"U"} ${tl.total}`,
+                            odds:best==="over"?e.ovOd:e.unOd,book:e.book,
+                            edge:+thisE.toFixed(1),units:suggestUnits(thisE),
+                            entryOdds:best==="over"?e.ovOd:e.unOd,
+                          })}>+</Btn>}
+                        </div>
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+
+            {/* ── MONEYLINE TABLE ── */}
+            {gView==="ml"&&g.mlData.entries.length>0&&(
+              <div style={{marginBottom:8}}>
+                <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:4}}>Moneyline</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto",gap:1,fontSize:10,fontFamily:F.m}}>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700}}>Book</div>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>{g.away_team.split(" ").pop()}</div>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>{g.home_team.split(" ").pop()}</div>
+                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Edge</div>
+                  {g.mlData.entries.sort((a,b)=>b.awOd-a.awOd).map((e,ei)=>{
+                    const isSh=SHARP_BOOKS.includes(e.bk);
+                    const ae=g.shMlAwMed?calcEdge(e.awOd,g.shMlAwMed):0;
+                    const he=g.shMlHmMed?calcEdge(e.hmOd,g.shMlHmMed):0;
+                    const thisE=Math.max(ae,he);
+                    return(
+                      <React.Fragment key={ei}>
+                        <div style={{padding:"5px 6px",color:isSh?T.grn:T.tx,background:ei%2?T.card2:"transparent"}}>{e.book}{isSh?" ★":""}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ae>2?T.grn:T.tx}}>{e.awOd>0?"+":""}{e.awOd}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:he>2?T.grn:T.tx}}>{e.hmOd>0?"+":""}{e.hmOd}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>3?T.gold:thisE>2?T.grn:T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Consensus Footer */}
+            <div style={{marginTop:8,padding:"6px 10px",background:T.card2,borderRadius:4,fontSize:9,fontFamily:F.m,color:T.mut}}>
+              {g.conSrc==="sharp"?"★":"○"} {g.conSrc==="sharp"?`Sharp consensus (${g.sharpN} books)`:"Market median (no sharp books)"} · Spread: {g.shSpMed>0?"+":""}{g.shSpMed} · Total: {g.shToMed>0?"+":""}{g.shToMed}
+              {g.juiceSig&&<span style={{color:T.orn}}> · Juice: {g.juiceSig.detail}</span>}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════
+  // TRACKER VIEW
+  // ════════════════════════════════════════════════════════════
+
+  const Tracker=()=>{
+    const pending=bets.filter(b=>!b.result);
+    const needClv=bets.filter(b=>b.result&&!b.closingOdds);
+    const settled=bets.filter(b=>b.result);
+
+    return(
+      <div>
+        <Btn pri onClick={()=>setManBet(manBet?null:{sport:"",game:"",type:"Spread",line:"",odds:"",book:"",edge:0,units:1})} style={{marginBottom:12,width:"100%"}}>
+          {manBet?"✕ Cancel":"+ Log Bet Manually"}
+        </Btn>
+
+        {manBet&&(
+          <div style={{padding:14,background:T.card,border:`1px solid ${T.bdr}`,borderRadius:8,marginBottom:12}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+              {[{l:"Sport",k:"sport",p:"NBA"},{l:"Game",k:"game",p:"Away @ Home"},{l:"Type",k:"type",p:"Spread"},{l:"Line",k:"line",p:"-3.5"},{l:"Odds",k:"odds",p:"-110"},{l:"Book",k:"book",p:"DraftKings"},{l:"Edge %",k:"edge",p:"2.5"},{l:"Units",k:"units",p:"2"}].map(f=>(
+                <div key={f.k}>
+                  <div style={{fontSize:9,color:T.mut,fontFamily:F.m,marginBottom:2}}>{f.l}</div>
+                  <input value={manBet[f.k]} onChange={e=>setManBet(p=>({...p,[f.k]:e.target.value}))} placeholder={f.p} style={{width:"100%",padding:"6px 8px",background:T.card2,border:`1px solid ${T.bdr}`,borderRadius:4,color:T.tx,fontSize:12,fontFamily:F.m,outline:"none"}}/>
+                </div>
+              ))}
+            </div>
+            <Btn pri onClick={()=>{trackBet({...manBet,odds:+manBet.odds,edge:+manBet.edge,units:+manBet.units,entryOdds:+manBet.odds});setManBet(null);}}>Save Bet</Btn>
+          </div>
+        )}
+
+        {pending.length>0&&(
+          <div style={{marginBottom:16}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.gold,fontFamily:F.m,marginBottom:6,textTransform:"uppercase"}}>Pending ({pending.length})</div>
+            {pending.map(b=>(
+              <div key={b.id} style={{padding:"10px 12px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:6,marginBottom:6}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div>
+                    <span style={{fontSize:12,fontWeight:700,color:T.txB}}>{b.game}</span>
+                    <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginTop:2}}>{b.type} {b.line} · {b.odds>0?"+":""}{b.odds} · {b.book} · {b.units}u</div>
+                  </div>
+                  <div style={{display:"flex",gap:4}}>
+                    <Btn sm style={{background:T.grnB,color:T.grn}} onClick={()=>updateResult(b.id,"W")}>W</Btn>
+                    <Btn sm style={{background:T.redB,color:T.red}} onClick={()=>updateResult(b.id,"L")}>L</Btn>
+                    <Btn sm onClick={()=>updateResult(b.id,"P")}>P</Btn>
+                    <Btn sm style={{background:T.redB,color:T.red}} onClick={()=>deleteBet(b.id)}>✕</Btn>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {needClv.length>0&&(
+          <div style={{marginBottom:16}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.blu,fontFamily:F.m,marginBottom:6,textTransform:"uppercase"}}>Enter Closing Lines ({needClv.length})</div>
+            {needClv.map(b=>(
+              <div key={b.id} style={{padding:"10px 12px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:6,marginBottom:6}}>
+                <div style={{fontSize:11,fontWeight:600,color:T.txB,marginBottom:4}}>{b.game} — {b.type} {b.line}</div>
+                <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:6}}>Entry: {b.odds>0?"+":""}{b.odds} · Result: <span style={{color:b.result==="W"?T.grn:T.red}}>{b.result}</span></div>
+                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  <input type="number" placeholder="Closing odds (e.g. -115)" value={clvIn[b.id]||""} onChange={e=>setClvIn(p=>({...p,[b.id]:e.target.value}))} style={{flex:1,padding:"6px 8px",background:T.card2,border:`1px solid ${T.bdr}`,borderRadius:4,color:T.tx,fontSize:11,fontFamily:F.m,outline:"none"}}/>
+                  {clvIn[b.id]&&(
+                    <span style={{fontSize:10,fontFamily:F.m,color:calcCLV(b.entryOdds||b.odds,+clvIn[b.id])>0?T.grn:T.red}}>
+                      CLV: {calcCLV(b.entryOdds||b.odds,+clvIn[b.id]).toFixed(1)}%
+                    </span>
+                  )}
+                  <Btn sm pri dis={!clvIn[b.id]} onClick={()=>{enterCLV(b.id,+clvIn[b.id]);setClvIn(p=>{const n={...p};delete n[b.id];return n;});}}>Save</Btn>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {settled.length>0&&(
+          <div>
+            <div style={{fontSize:10,fontWeight:700,color:T.mut,fontFamily:F.m,marginBottom:6,textTransform:"uppercase"}}>History ({settled.length})</div>
+            {settled.map(b=>(
+              <div key={b.id} style={{padding:"8px 12px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:6,marginBottom:4,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{flex:1}}>
+                  <span style={{fontSize:11,color:T.txB,fontWeight:600}}>{b.game}</span>
+                  <div style={{fontSize:9,color:T.mut,fontFamily:F.m,marginTop:2}}>
+                    {b.type} {b.line} · {b.odds>0?"+":""}{b.odds} · {b.book}
+                    {b.clv!=null&&<span style={{color:b.clv>0?T.grn:T.red,marginLeft:6}}>CLV: {b.clv>0?"+":""}{b.clv.toFixed(1)}%</span>}
+                  </div>
+                </div>
+                <Badge bg={b.result==="W"?T.grnB:b.result==="L"?T.redB:T.bdr} color={b.result==="W"?T.grn:b.result==="L"?T.red:T.mut}>{b.result}</Badge>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!bets.length&&<div style={{textAlign:"center",padding:40,color:T.mut,fontSize:12,fontFamily:F.m}}>No bets tracked yet. Use the scanner to find edges.</div>}
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════
+  // DASHBOARD VIEW
+  // ════════════════════════════════════════════════════════════
+
+  const Dashboard=()=>{
+    const Stat=({label,value,sub,color})=>(
+      <div style={{padding:"14px 12px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:8,textAlign:"center"}}>
+        <div style={{fontSize:22,fontWeight:800,color:color||T.txB,fontFamily:F.m}}>{value}</div>
+        <div style={{fontSize:9,color:T.mut,fontFamily:F.m,marginTop:2,textTransform:"uppercase",letterSpacing:".05em"}}>{label}</div>
+        {sub&&<div style={{fontSize:9,color:T.mut,fontFamily:F.m,marginTop:2}}>{sub}</div>}
+      </div>
+    );
+
+    return(
+      <div>
+        <div style={{padding:"12px 14px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:8,marginBottom:12,display:"flex",alignItems:"center",gap:10}}>
+          <div style={{fontSize:10,color:T.mut,fontFamily:F.m,whiteSpace:"nowrap"}}>Bankroll $</div>
+          <input type="number" value={bankroll||""} onChange={e=>setBankroll(+e.target.value)} placeholder="5000" style={{flex:1,padding:"6px 8px",background:T.card2,border:`1px solid ${T.bdr}`,borderRadius:4,color:T.gold,fontSize:14,fontWeight:700,fontFamily:F.m,outline:"none"}}/>
+          <div style={{fontSize:10,color:T.mut,fontFamily:F.m}}>1u = ${unitSz.toLocaleString()}</div>
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
+          <Stat label="Record" value={`${stats.W}-${stats.L}`} sub={stats.P?`${stats.P} pushes`:null}/>
+          <Stat label="Win Rate" value={stats.wr?stats.wr.toFixed(1)+"%":"—"} color={stats.wr>55?T.grn:stats.wr>50?T.tx:T.red}/>
+          <Stat label="ROI" value={stats.roi?(stats.roi>0?"+":"")+stats.roi.toFixed(1)+"%":"—"} color={stats.roi>0?T.grn:T.red}/>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:12}}>
+          <Stat label="Avg CLV" value={stats.avgClv?(stats.avgClv>0?"+":"")+stats.avgClv.toFixed(1)+"%":"—"} sub={`${stats.clvN} measured`} color={stats.avgClv>0?T.grn:T.red}/>
+          <Stat label="Profit" value={stats.profit?(stats.profit>0?"+$":"-$")+Math.abs(Math.round(stats.profit)).toLocaleString():"—"} color={stats.profit>0?T.grn:T.red}/>
+          <Stat label="Total Bets" value={stats.total} sub={`${stats.settled} settled`}/>
+        </div>
+
+        {Object.keys(stats.bySport).length>0&&(
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.gold,fontFamily:F.m,marginBottom:6,textTransform:"uppercase"}}>By Sport</div>
+            {Object.entries(stats.bySport).map(([sp,d])=>(
+              <div key={sp} style={{display:"flex",justifyContent:"space-between",padding:"6px 10px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:4,marginBottom:4,fontSize:11,fontFamily:F.m}}>
+                <span style={{color:T.txB,fontWeight:600}}>{sp}</span>
+                <span style={{color:T.mut}}>{d.w}-{d.l} ({d.n} bets) · {d.w+d.l>0?(d.w/(d.w+d.l)*100).toFixed(0):0}%</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {Object.keys(stats.byType).length>0&&(
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.blu,fontFamily:F.m,marginBottom:6,textTransform:"uppercase"}}>By Type</div>
+            {Object.entries(stats.byType).map(([tp,d])=>(
+              <div key={tp} style={{display:"flex",justifyContent:"space-between",padding:"6px 10px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:4,marginBottom:4,fontSize:11,fontFamily:F.m}}>
+                <span style={{color:T.txB,fontWeight:600}}>{tp}</span>
+                <span style={{color:T.mut}}>{d.w}-{d.l} ({d.n} bets) · {d.w+d.l>0?(d.w/(d.w+d.l)*100).toFixed(0):0}%</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{padding:"12px 14px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:8}}>
+          <div style={{fontSize:10,fontWeight:700,color:T.gold,fontFamily:F.m,marginBottom:8,textTransform:"uppercase"}}>Unit Sizing Guide</div>
+          <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:8,lineHeight:1.5}}>Size scales with edge. Max 5u (5% of bankroll) — never overbet a single game.</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:6}}>
+            {[{r:"1.5–2.5%",u:"1 unit",n:1},{r:"2.5–4%",u:"2 units",n:2},{r:"4–6%",u:"3 units",n:3},{r:"6–8%",u:"4 units",n:4},{r:"8%+",u:"5u MAX",n:5}].map(x=>(
+              <div key={x.r} style={{padding:"8px 10px",background:T.card2,borderRadius:4,border:`1px solid ${T.bdr}`}}>
+                <div style={{color:T.grn,fontSize:10,fontWeight:700,fontFamily:F.m}}>{x.r} edge</div>
+                <div style={{color:T.txB,fontSize:12,fontWeight:700,fontFamily:F.m,marginTop:2}}>{x.u}</div>
+                <div style={{color:T.gold,fontSize:10,fontFamily:F.m,marginTop:1}}>{bankroll>0?`$${(x.n*unitSz).toLocaleString()}`:"—"}</div>
+              </div>
+            ))}
           </div>
         </div>
-      )}
-    </div>
-  );
-}
-
-function ExposureWarning({bets,bankroll,unitSize,T}){
-  if(bankroll<=0) return null;
-  const pending=bets.filter(b=>!b.result);
-  if(pending.length===0) return null;
-  const totalAction=pending.reduce((s,b)=>s+b.units*unitSize,0);
-  const pct=totalAction/bankroll*100;
-  const bySport={};
-  pending.forEach(b=>{bySport[b.sport]=(bySport[b.sport]||0)+b.units*unitSize;});
-  const worst=Object.entries(bySport).sort((a,b)=>b[1]-a[1])[0];
-  const worstPct=worst?worst[1]/bankroll*100:0;
-  const todayPct=pending.filter(b=>new Date(b.timestamp).toDateString()===new Date().toDateString()).reduce((s,b)=>s+b.units*unitSize,0)/bankroll*100;
-  const warnings=[];
-  if(pct>=25) warnings.push(`${pct.toFixed(0)}% of bankroll in action (${pending.length} pending · $${totalAction.toLocaleString()})`);
-  if(worstPct>=15) warnings.push(`${worstPct.toFixed(0)}% exposed to ${worst[0]}`);
-  if(todayPct>=15) warnings.push(`${todayPct.toFixed(0)}% of bankroll bet today`);
-  if(warnings.length===0) return null;
-  return <div style={{marginBottom:10,padding:"8px 12px",background:T.redBg,border:`1px solid ${T.red}22`,borderRadius:4}}><div style={{color:T.red,fontSize:10,fontWeight:700,fontFamily:F.mono,marginBottom:2}}>⚠ EXPOSURE WARNING</div>{warnings.map((w,i)=><div key={i} style={{color:T.red,fontSize:10,lineHeight:1.6}}>{w}</div>)}</div>;
-}
-
-function CLVEntry({bet,onSave,onClose,T}){
-  const [closingOdds,setClosingOdds]=useState("");
-  const preview=closingOdds?calcCLV(bet.entryOdds||bet.odds,parseInt(closingOdds)):null;
-  return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20}}>
-      <div style={{background:T.card,border:`1px solid ${T.borderHi}`,borderRadius:8,padding:20,width:"100%",maxWidth:340}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><span style={{color:T.text,fontSize:13,fontWeight:700}}>Enter Closing Line</span><button onClick={onClose} style={{background:"none",border:"none",color:T.muted,fontSize:15,cursor:"pointer"}}>×</button></div>
-        <div style={{marginBottom:12,padding:"8px 10px",background:T.bg,borderRadius:4,border:`1px solid ${T.border}`}}><div style={{color:T.dim,fontSize:10,fontFamily:F.mono}}>{bet.game} · {bet.type} {bet.line}</div><div style={{color:T.text,fontSize:11,fontFamily:F.mono,marginTop:2}}>Your entry: <strong>{bet.entryOdds||bet.odds}</strong></div></div>
-        <label style={{color:T.muted,fontSize:9,fontWeight:600,fontFamily:F.mono,letterSpacing:0.8,display:"block",marginBottom:4}}>CLOSING ODDS (e.g. -125 or +105)</label>
-        <input autoFocus value={closingOdds} onChange={e=>setClosingOdds(e.target.value.replace(/[^0-9+\-]/g,""))} placeholder="-125" style={{width:"100%",padding:"8px 10px",background:T.bg,border:`1px solid ${T.borderHi}`,borderRadius:4,color:T.text,fontSize:14,fontFamily:F.mono,outline:"none",marginBottom:10}}/>
-        {preview!==null&&<div style={{marginBottom:12,padding:"6px 10px",borderRadius:3,background:preview>=0?T.greenBg:T.redBg,border:`1px solid ${preview>=0?T.green+"30":T.red+"30"}`}}><span style={{color:preview>=0?T.green:T.red,fontSize:12,fontWeight:700,fontFamily:F.mono}}>CLV: {preview>=0?"+":""}{preview.toFixed(2)}%</span><span style={{color:T.dim,fontSize:10,fontFamily:F.mono,marginLeft:8}}>{preview>=0?"✓ Beat the closing line":"✗ Market moved against you"}</span></div>}
-        <button onClick={()=>{if(closingOdds){onSave(parseInt(closingOdds));onClose();}}} disabled={!closingOdds} style={{width:"100%",padding:9,background:closingOdds?T.green:"transparent",color:closingOdds?T.bg:T.muted,border:`1px solid ${closingOdds?T.green:T.border}`,borderRadius:4,fontSize:12,fontWeight:700,cursor:closingOdds?"pointer":"default",fontFamily:F.mono}}>SAVE CLV</button>
       </div>
-    </div>
-  );
-}
-
-function BetTracker({bets,setBets,bankroll,unitSize,T,dbSyncing}){
-  const [showBreakdown,setShowBreakdown]=useState(false);
-  const [clvTarget,setCLVTarget]=useState(null);
-  const stats=useMemo(()=>{
-    const s=bets.filter(b=>b.result),w=s.filter(b=>b.result==="W"),l=s.filter(b=>b.result==="L"),p=s.filter(b=>b.result==="P");
-    const uw=w.reduce((s,b)=>s+b.units*(100/Math.abs(b.odds)),0),ul=l.reduce((s,b)=>s+b.units,0),net=uw-ul;
-    const roi=s.length>0?(net/s.reduce((s,b)=>s+b.units,0))*100:0;
-    const ae=bets.length>0?bets.reduce((s,b)=>s+b.edge,0)/bets.length:0;
-    const wr=s.length>0?(w.length/Math.max(s.length-p.length,1))*100:0;
-    return {wins:w.length,losses:l.length,pushes:p.length,netUnits:net,roi,avgEdge:ae,winRate:wr,pending:bets.length-s.length};
-  },[bets]);
-  const sportBreakdowns=useMemo(()=>{
-    const map={};
-    bets.forEach(b=>{if(!map[b.sport])map[b.sport]={bets:0,settled:0,wins:0,losses:0,pushes:0,unitsWon:0,unitsLost:0,totalUnits:0,edgeSum:0};const m=map[b.sport];m.bets++;m.edgeSum+=b.edge;if(b.result){m.settled++;if(b.result==="W"){m.wins++;m.unitsWon+=b.units*(100/Math.abs(b.odds));}if(b.result==="L"){m.losses++;m.unitsLost+=b.units;}if(b.result==="P")m.pushes++;m.totalUnits+=b.units;}});
-    return Object.entries(map).map(([sport,d])=>({sport,...d,net:d.unitsWon-d.unitsLost,roi:d.settled>0?((d.unitsWon-d.unitsLost)/Math.max(d.totalUnits,1))*100:0,winRate:d.settled>0?(d.wins/Math.max(d.settled-d.pushes,1))*100:0,avgEdge:d.bets>0?d.edgeSum/d.bets:0})).sort((a,b)=>b.net-a.net);
-  },[bets]);
-  const nd=bankroll>0?stats.netUnits*unitSize:0;
-
-  const handleResult = async (i, r) => {
-    const updated = [...bets];
-    updated[i] = { ...updated[i], result: r };
-    setBets(updated);
-    if (updated[i].id) await dbUpdate(updated[i].id, { result: r });
+    );
   };
 
-  const handleDelete = async (i) => {
-    const bet = bets[i];
-    setBets(bets.filter((_,j)=>j!==i));
-    if (bet.id) await dbDelete(bet.id);
-  };
+  // ════════════════════════════════════════════════════════════
+  // SETTINGS VIEW
+  // ════════════════════════════════════════════════════════════
 
-  const handleCLVSave = async (idx, closingOdds) => {
-    const updated = [...bets];
-    const bet = updated[idx];
-    const clv = calcCLV(bet.entryOdds || bet.odds, closingOdds);
-    updated[idx] = { ...bet, closingOdds, clv };
-    setBets(updated);
-    if (bet.id) await dbUpdate(bet.id, { closingOdds, clv });
-  };
-
-  return (
+  const Settings=()=>(
     <div>
-      {clvTarget!==null&&<CLVEntry bet={bets[clvTarget]} onSave={(co)=>handleCLVSave(clvTarget,co)} onClose={()=>setCLVTarget(null)} T={T}/>}
-      <ExposureWarning bets={bets} bankroll={bankroll} unitSize={unitSize} T={T}/>
-      {dbSyncing&&<div style={{marginBottom:8,padding:"4px 10px",background:T.goldBg,borderRadius:3,border:`1px solid ${T.gold}30`}}><span style={{color:T.gold,fontSize:9,fontFamily:F.mono}}>⟳ Syncing with cloud...</span></div>}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:14}}>
-        {[{l:"NET UNITS",v:(stats.netUnits>=0?"+":"")+stats.netUnits.toFixed(2),s:bankroll>0?`${nd>=0?"+":""}$${nd.toFixed(0)}`:null,c:stats.netUnits>=0?T.green:T.red},{l:"ROI",v:`${stats.roi>=0?"+":""}${stats.roi.toFixed(1)}%`,c:stats.roi>=0?T.green:T.red},{l:"WIN RATE",v:`${stats.winRate.toFixed(1)}%`,s:`${stats.wins}W-${stats.losses}L-${stats.pushes}P`,c:T.text},{l:"AVG EDGE",v:`${stats.avgEdge.toFixed(1)}%`,s:`${stats.pending} pending`,c:T.gold}].map(s=><div key={s.l} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:"10px 12px"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:4}}>{s.l}</div><div style={{color:s.c,fontSize:18,fontWeight:700,fontFamily:F.mono}}>{s.v}</div>{s.s&&<div style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginTop:2}}>{s.s}</div>}</div>)}
+      <div style={{fontSize:10,fontWeight:700,color:T.gold,fontFamily:F.m,marginBottom:8,textTransform:"uppercase"}}>My Sportsbooks</div>
+      <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:10,lineHeight:1.5}}>Select books you have accounts with. Edge calculations prioritize lines available to you. Leave empty to show all.</div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:16}}>
+        {ALL_BOOKS.map(bk=>{
+          const on=myBooks.includes(bk);
+          return(<span key={bk} onClick={()=>setMyBooks(p=>on?p.filter(b=>b!==bk):[...p,bk])} style={{padding:"6px 12px",borderRadius:4,fontSize:11,fontWeight:600,fontFamily:F.m,cursor:"pointer",background:on?T.gold+"20":T.card2,color:on?T.gold:T.mut,border:`1px solid ${on?T.gold+"40":T.bdr}`}}>{bk}</span>);
+        })}
       </div>
-      {bets.length>0&&<><button onClick={()=>setShowBreakdown(!showBreakdown)} style={{width:"100%",padding:"8px",background:T.card,border:`1px solid ${T.border}`,borderRadius:4,color:showBreakdown?T.text:T.dim,fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:F.mono,marginBottom:10,textAlign:"center"}}>{showBreakdown?"▾ HIDE":"▸ SHOW"} SPORT BREAKDOWN</button>
-        {showBreakdown&&<div style={{marginBottom:14}}><div style={{display:"grid",gridTemplateColumns:"auto repeat(5,1fr)",gap:"4px 12px",fontSize:10,fontFamily:F.mono,padding:"6px 10px",background:T.card,borderRadius:4,border:`1px solid ${T.border}`}}>
-          <div style={{color:T.muted,fontWeight:600}}>SPORT</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>RECORD</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>NET U</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>ROI</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>WIN%</div><div style={{color:T.muted,fontWeight:600,textAlign:"right"}}>AVG EDGE</div>
-          {sportBreakdowns.map(s=><React.Fragment key={s.sport}><div style={{color:T.text,fontWeight:600}}>{s.sport}</div><div style={{textAlign:"right",color:T.dim}}>{s.wins}-{s.losses}-{s.pushes}</div><div style={{textAlign:"right",color:s.net>=0?T.green:T.red}}>{s.net>=0?"+":""}{s.net.toFixed(2)}</div><div style={{textAlign:"right",color:s.roi>=0?T.green:T.red}}>{s.roi>=0?"+":""}{s.roi.toFixed(1)}%</div><div style={{textAlign:"right",color:T.dim}}>{s.winRate.toFixed(1)}%</div><div style={{textAlign:"right",color:T.gold}}>{s.avgEdge.toFixed(1)}%</div></React.Fragment>)}
-        </div></div>}</>}
-      {bets.length===0?<div style={{textAlign:"center",padding:"40px 20px",color:T.muted}}><div style={{fontSize:24,marginBottom:8,opacity:0.4}}>📋</div><div style={{fontSize:13}}>No bets tracked yet</div></div>:
-        bets.map((bet,i)=>(
-          <div key={bet.id||i} style={{background:T.card,border:`1px solid ${bet.result==="W"?`${T.green}22`:bet.result==="L"?`${T.red}22`:T.border}`,borderRadius:6,padding:"10px 14px",marginBottom:3}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <div style={{flex:1}}>
-                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}><span style={{fontSize:8,padding:"1px 4px",borderRadius:2,background:`${T.muted}15`,color:T.muted,fontFamily:F.mono,fontWeight:600}}>{bet.sport}</span><span style={{color:T.text,fontSize:12,fontWeight:600}}>{bet.game}</span></div>
-                <div style={{color:T.dim,fontSize:10,fontFamily:F.mono}}>{bet.type} {bet.line} ({bet.odds}) · {bet.book} · {bet.units}u{bankroll>0&&<> · <span style={{color:T.gold}}>${(bet.units*unitSize).toFixed(0)}</span></>} · edge {bet.edge.toFixed(1)}%</div>
-                {bet.clv!==null&&bet.clv!==undefined?(<div style={{marginTop:3,display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:9,fontFamily:F.mono,color:T.muted}}>CLV:</span><span style={{fontSize:10,fontWeight:700,fontFamily:F.mono,color:bet.clv>=0?T.green:T.red}}>{bet.clv>=0?"+":""}{bet.clv.toFixed(2)}%</span><span style={{fontSize:9,fontFamily:F.mono,color:T.muted}}>{bet.clv>=0?"(beat the close)":"(missed)"}</span><span style={{fontSize:8,fontFamily:F.mono,color:T.muted}}>entry {bet.entryOdds||bet.odds} → close {bet.closingOdds}</span></div>):(<button onClick={()=>setCLVTarget(i)} style={{marginTop:4,padding:"2px 8px",borderRadius:2,border:`1px solid ${T.border}`,background:"transparent",color:T.muted,fontSize:8,fontWeight:600,cursor:"pointer",fontFamily:F.mono}}>+ Enter Closing Line</button>)}
-              </div>
-              <div style={{display:"flex",gap:3,alignItems:"center"}}>
-                {bet.result?<span style={{padding:"2px 10px",borderRadius:3,fontSize:11,fontWeight:800,fontFamily:F.mono,color:bet.result==="W"?T.green:bet.result==="L"?T.red:T.muted,background:bet.result==="W"?T.greenBg:bet.result==="L"?T.redBg:`${T.muted}15`}}>{bet.result==="W"?"WIN":bet.result==="L"?"LOSS":"PUSH"}</span>:
-                  ["W","L","P"].map(r=><button key={r} onClick={()=>handleResult(i,r)} style={{width:26,height:26,borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:r==="W"?T.green:r==="L"?T.red:T.muted,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>{r}</button>)}
-                <button onClick={()=>handleDelete(i)} style={{width:26,height:26,borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.muted,fontSize:12,cursor:"pointer"}}>×</button>
-              </div>
-            </div>
+      <div style={{fontSize:10,fontWeight:700,color:T.blu,fontFamily:F.m,marginBottom:8,textTransform:"uppercase"}}>Account</div>
+      <div style={{padding:"10px 12px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:6,fontSize:10,fontFamily:F.m,color:T.mut,lineHeight:1.8}}>
+        Device ID: {UID}<br/>
+        API Credits: {credits!==null?credits.toLocaleString():"—"}<br/>
+        Database: Supabase (connected)<br/>
+        Bets: {bets.length}
+      </div>
+    </div>
+  );
+
+  // ════════════════════════════════════════════════════════════
+  // MAIN RENDER
+  // ════════════════════════════════════════════════════════════
+
+  const tabs=[
+    {k:"scanner",l:"Scanner",i:"◎"},
+    {k:"tracker",l:"Tracker",i:"▣",badge:bets.filter(b=>!b.result).length||null},
+    {k:"dashboard",l:"Dashboard",i:"◧"},
+    {k:"settings",l:"Settings",i:"⚙"},
+  ];
+
+  return(
+    <div style={{maxWidth:520,margin:"0 auto",minHeight:"100vh",background:T.bg}}>
+      {/* Header */}
+      <div style={{padding:"16px 16px 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{width:30,height:30,borderRadius:6,background:`linear-gradient(135deg,${T.gold},${T.goldD})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:900,color:T.bg,fontFamily:F.m}}>SL</div>
+          <div style={{fontSize:15,fontWeight:800,color:T.txB,letterSpacing:".04em",fontFamily:F.m}}>SHARPLINE</div>
+        </div>
+        {credits!==null&&<div style={{fontSize:9,color:T.mut,fontFamily:F.m}}>{credits.toLocaleString()} credits</div>}
+      </div>
+
+      {/* Nav */}
+      <div style={{display:"flex",gap:2,padding:"12px 16px 0",borderBottom:`1px solid ${T.bdr}`}}>
+        {tabs.map(t=>(
+          <div key={t.k} onClick={()=>setTab(t.k)} style={{padding:"8px 14px",cursor:"pointer",borderBottom:`2px solid ${tab===t.k?T.gold:"transparent"}`,display:"flex",alignItems:"center",gap:4}}>
+            <span style={{fontSize:12,color:tab===t.k?T.gold:T.mut}}>{t.i}</span>
+            <span style={{fontSize:11,fontWeight:600,color:tab===t.k?T.txB:T.mut,fontFamily:F.m}}>{t.l}</span>
+            {t.badge&&<span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:16,height:16,borderRadius:8,background:T.gold,color:T.bg,fontSize:9,fontWeight:800,fontFamily:F.m}}>{t.badge}</span>}
           </div>
         ))}
-    </div>
-  );
-}
-
-function ManualBetForm({onAddBet,onClose,T}){
-  const [f,setF]=useState({sport:"NBA",game:"",type:"Spread",line:"",odds:"-110",book:"DraftKings",edge:"",units:"1"});
-  const is={width:"100%",padding:"7px 9px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:4,color:T.text,fontSize:12,fontFamily:F.body,outline:"none"};
-  const ls={color:T.muted,fontSize:8,fontWeight:600,fontFamily:F.mono,letterSpacing:0.8,marginBottom:2,display:"block"};
-  return (
-    <div style={{background:T.card,border:`1px solid ${T.borderHi}`,borderRadius:6,padding:14,marginBottom:10}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><span style={{color:T.text,fontSize:13,fontWeight:700}}>Log a Bet</span><button onClick={onClose} style={{background:"none",border:"none",color:T.muted,fontSize:15,cursor:"pointer"}}>×</button></div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-        <div><label style={ls}>SPORT</label><select value={f.sport} onChange={e=>setF({...f,sport:e.target.value})} style={{...is,appearance:"auto"}}>{SPORTS.map(s=><option key={s.key} value={s.key}>{s.icon} {s.label}</option>)}</select></div>
-        <div><label style={ls}>TYPE</label><select value={f.type} onChange={e=>setF({...f,type:e.target.value})} style={{...is,appearance:"auto"}}>{["Spread","Total"].map(t=><option key={t}>{t}</option>)}</select></div>
-        <div style={{gridColumn:"1/-1"}}><label style={ls}>GAME</label><input placeholder="Chiefs @ Ravens" value={f.game} onChange={e=>setF({...f,game:e.target.value})} style={is}/></div>
-        <div><label style={ls}>LINE</label><input placeholder="-3.5" value={f.line} onChange={e=>setF({...f,line:e.target.value})} style={is}/></div>
-        <div><label style={ls}>ODDS</label><input placeholder="-110" value={f.odds} onChange={e=>setF({...f,odds:e.target.value})} style={is}/></div>
-        <div><label style={ls}>BOOK</label><select value={f.book} onChange={e=>setF({...f,book:e.target.value})} style={{...is,appearance:"auto"}}>{ALL_BOOKS.map(b=><option key={b} value={b}>{b}</option>)}</select></div>
-        <div><label style={ls}>EDGE %</label><input placeholder="3.5" value={f.edge} onChange={e=>setF({...f,edge:e.target.value})} style={is}/></div>
-        <div><label style={ls}>UNITS</label><input placeholder="1" value={f.units} onChange={e=>setF({...f,units:e.target.value})} style={is}/></div>
-      </div>
-      <button onClick={()=>{if(f.game&&f.line){onAddBet({sport:f.sport,game:f.game,type:f.type,line:f.line,odds:parseInt(f.odds)||-110,book:f.book,edge:parseFloat(f.edge)||0,units:parseFloat(f.units)||1,entryOdds:parseInt(f.odds)||-110});onClose();}}} style={{width:"100%",marginTop:10,padding:9,background:T.green,color:T.bg,border:"none",borderRadius:4,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>LOG BET</button>
-    </div>
-  );
-}
-
-function BankrollPanel({bankroll,setBankroll,unitSize,T}){
-  const [editing,setEditing]=useState(false),[input,setInput]=useState(bankroll.toString());
-  return (
-    <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:"12px 14px",marginBottom:10}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:3}}>BANKROLL</div>
-          {editing?<div style={{display:"flex",gap:4,alignItems:"center"}}><span style={{color:T.dim,fontSize:16,fontFamily:F.mono}}>$</span><input autoFocus value={input} onChange={e=>setInput(e.target.value.replace(/[^0-9]/g,""))} onKeyDown={e=>{if(e.key==="Enter"){setBankroll(parseInt(input)||0);setEditing(false);}}} style={{width:120,padding:"5px 7px",background:T.bg,border:`1px solid ${T.green}`,borderRadius:3,color:T.text,fontSize:18,fontWeight:700,fontFamily:F.mono,outline:"none"}}/><button onClick={()=>{setBankroll(parseInt(input)||0);setEditing(false);}} style={{padding:"5px 10px",background:T.green,color:T.bg,border:"none",borderRadius:3,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>SET</button></div>:
-          <div onClick={()=>{setInput(bankroll.toString());setEditing(true);}} style={{cursor:"pointer",display:"flex",alignItems:"baseline",gap:6}}><span style={{color:T.text,fontSize:22,fontWeight:700,fontFamily:F.mono}}>${bankroll>0?bankroll.toLocaleString():"—"}</span><span style={{color:T.muted,fontSize:10,fontFamily:F.mono}}>{bankroll>0?"edit":"set amount"}</span></div>}
-        </div>
-        {bankroll>0&&<div style={{textAlign:"right"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:3}}>1 UNIT = 1%</div><div style={{color:T.gold,fontSize:20,fontWeight:700,fontFamily:F.mono}}>${unitSize.toLocaleString()}</div><div style={{display:"flex",gap:3,marginTop:4}}>{[1,2,3,4,5].map(u=><div key={u} style={{textAlign:"center",padding:"2px 6px",background:`${T.muted}10`,borderRadius:2,border:`1px solid ${T.border}`}}><div style={{color:T.muted,fontSize:7,fontFamily:F.mono}}>{u}u</div><div style={{color:T.dim,fontSize:9,fontFamily:F.mono,fontWeight:600}}>${(u*unitSize).toLocaleString()}</div></div>)}</div></div>}
-      </div>
-    </div>
-  );
-}
-
-function CLVTab({bets,setBets,T}){
-  const [clvTarget,setCLVTarget]=useState(null);
-  const clvStats=useMemo(()=>{const wc=bets.filter(b=>b.clv!==null&&b.clv!==undefined);if(wc.length===0)return{avg:0,beatPct:0,total:0,positive:0};const pos=wc.filter(b=>b.clv>0);return{avg:wc.reduce((s,b)=>s+b.clv,0)/wc.length,beatPct:pos.length/wc.length*100,total:wc.length,positive:pos.length};},[bets]);
-  const pendingCLV=bets.filter(b=>b.clv===null||b.clv===undefined);
-
-  const handleCLVSave = async (idx, closingOdds) => {
-    const updated=[...bets];
-    const bet=updated[idx];
-    const clv=calcCLV(bet.entryOdds||bet.odds,closingOdds);
-    updated[idx]={...bet,closingOdds,clv};
-    setBets(updated);
-    if(bet.id) await dbUpdate(bet.id,{closingOdds,clv});
-  };
-
-  return (
-    <div>
-      {clvTarget!==null&&<CLVEntry bet={bets[clvTarget]} onSave={(co)=>handleCLVSave(clvTarget,co)} onClose={()=>setCLVTarget(null)} T={T}/>}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:14}}>
-        {[{l:"AVG CLV",v:clvStats.total>0?`${clvStats.avg>=0?"+":""}${clvStats.avg.toFixed(2)}%`:"—",c:clvStats.total>0?(clvStats.avg>=0?T.green:T.red):T.muted,s:`${clvStats.total} tracked`},{l:"BEAT THE CLOSE",v:clvStats.total>0?`${clvStats.beatPct.toFixed(1)}%`:"—",c:clvStats.total>0?(clvStats.beatPct>=55?T.green:T.gold):T.muted,s:clvStats.total>0?`${clvStats.positive}/${clvStats.total} bets`:""},{l:"AWAITING CLOSE",v:`${pendingCLV.length}`,c:pendingCLV.length>0?T.gold:T.muted,s:"click to enter"}].map(s=><div key={s.l} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:"10px 12px"}}><div style={{color:T.muted,fontSize:8,fontFamily:F.mono,letterSpacing:1,marginBottom:4}}>{s.l}</div><div style={{color:s.c,fontSize:20,fontWeight:700,fontFamily:F.mono}}>{s.v}</div>{s.s&&<div style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginTop:2}}>{s.s}</div>}</div>)}
-      </div>
-      <div style={{padding:"10px 12px",background:T.goldBg,borderRadius:4,borderLeft:`2px solid ${T.gold}`,marginBottom:14}}>
-        <div style={{color:T.gold,fontSize:10,fontWeight:700,fontFamily:F.mono,marginBottom:3}}>WHY CLV IS THE METRIC THAT MATTERS</div>
-        <div style={{color:T.dim,fontSize:10,lineHeight:1.7}}>Win rate lies. CLV doesn't. Consistently beating the closing line means you're finding value before the market does — the definition of sharp betting. After a game closes, enter the closing odds to track your edge over time. A 55%+ beat rate signals genuine skill.</div>
-      </div>
-      {pendingCLV.length>0&&<div style={{marginBottom:14}}>
-        <div style={{color:T.muted,fontSize:9,fontWeight:700,fontFamily:F.mono,letterSpacing:1,marginBottom:8}}>AWAITING CLOSING LINE</div>
-        {pendingCLV.map(bet=>{const idx=bets.indexOf(bet);return(<div key={idx} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:4,padding:"8px 12px",marginBottom:4,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{color:T.text,fontSize:11,fontWeight:600}}>{bet.game}</div><div style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>{bet.type} {bet.line} · entry: {bet.entryOdds||bet.odds} · {bet.book}</div></div><button onClick={()=>setCLVTarget(idx)} style={{padding:"4px 12px",borderRadius:3,border:`1px solid ${T.gold}40`,background:T.goldBg,color:T.gold,fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:F.mono,whiteSpace:"nowrap"}}>Enter Close →</button></div>);})}
-      </div>}
-      {bets.filter(b=>b.clv!==null&&b.clv!==undefined).length>0&&<div>
-        <div style={{color:T.muted,fontSize:9,fontWeight:700,fontFamily:F.mono,letterSpacing:1,marginBottom:8}}>CLV HISTORY</div>
-        {bets.filter(b=>b.clv!==null&&b.clv!==undefined).map((b,i)=>(<div key={i} style={{background:T.card,border:`1px solid ${b.clv>=0?`${T.green}15`:`${T.red}15`}`,borderRadius:4,padding:"8px 12px",marginBottom:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{color:T.text,fontSize:11,fontWeight:600}}>{b.game}</div><div style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>{b.type} {b.line} · {b.book} · Entry: {b.entryOdds||b.odds} → Close: {b.closingOdds}</div></div><div style={{textAlign:"right"}}><div style={{color:b.clv>=0?T.green:T.red,fontSize:14,fontWeight:800,fontFamily:F.mono}}>{b.clv>=0?"+":""}{b.clv.toFixed(2)}%</div><div style={{color:T.muted,fontSize:8,fontFamily:F.mono}}>{b.clv>=0?"BEAT CLOSE":"MISSED"}</div></div></div>))}
-      </div>}
-      {bets.length===0&&<div style={{textAlign:"center",padding:"40px 20px",color:T.muted}}><div style={{fontSize:24,marginBottom:8,opacity:0.4}}>📈</div><div style={{fontSize:13}}>Log bets in the Tracker tab, then enter closing lines here</div></div>}
-    </div>
-  );
-}
-
-function AlertBanner({alerts,T}){
-  const [dismissed,setDismissed]=useState(false);
-  if(dismissed||alerts.length===0) return null;
-  const top=alerts[0];
-  return <div style={{padding:"8px 14px",background:T.greenBg,borderBottom:`1px solid ${T.green}22`,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}><span style={{color:T.green,fontSize:10,fontWeight:700,fontFamily:F.mono}}>▲ EDGE DETECTED</span><span style={{color:T.text,fontSize:11}}>{top.away} @ {top.home}</span><span style={{color:T.dim,fontSize:10,fontFamily:F.mono}}>{top.type} · {top.edge.toFixed(1)}% at {top.book}</span>{alerts.length>1&&<span style={{color:T.muted,fontSize:10,fontFamily:F.mono}}>+{alerts.length-1} more</span>}</div><button onClick={()=>setDismissed(true)} style={{background:"none",border:"none",color:T.muted,fontSize:14,cursor:"pointer"}}>×</button></div>;
-}
-
-// ─── MAIN APP ───
-function SharpLine(){
-  const [activeSport,setActiveSport]=useState("NBA");
-  const [activeTab,setActiveTab]=useState("scanner");
-  const [bets,setBets]=useState([]);
-  const [games,setGames]=useState({});
-  const [lineHistory,setLineHistory]=useState({});
-  const [showManualBet,setShowManualBet]=useState(false);
-  const [bookFilter,setBookFilter]=useState("ALL");
-  const [bankroll,setBankroll]=useState(0);
-  const [loaded,setLoaded]=useState(false);
-  const [dark,setDark]=useState(true);
-  const [myBooks,setMyBooks]=useState(DEFAULT_MY_BOOKS);
-  const [showBookSettings,setShowBookSettings]=useState(false);
-  const [loading,setLoading]=useState({});
-  const [apiCredits,setApiCredits]=useState(null);
-  const [errors,setErrors]=useState({});
-  const [lastFetch,setLastFetch]=useState({});
-  const [dbSyncing,setDbSyncing]=useState(false);
-  const [dbError,setDbError]=useState(null);
-
-  const T=dark?themes.dark:themes.light;
-  const unitSize=Math.round(bankroll*0.01);
-
-  // Load settings from localStorage, bets from Supabase
-  useEffect(()=>{
-    setBankroll(ld(SK.bankroll,0));
-    setDark(ld(SK.theme,true));
-    setMyBooks(ld(SK.myBooks,DEFAULT_MY_BOOKS));
-    setDbSyncing(true);
-    dbLoad().then(data=>{
-      setBets(data);
-      setDbSyncing(false);
-      setLoaded(true);
-    }).catch(e=>{
-      setDbError("Could not connect to cloud. Bets may not sync.");
-      setDbSyncing(false);
-      setLoaded(true);
-    });
-    fetchSport("NBA");
-  },[]);
-
-  useEffect(()=>{if(loaded)sv(SK.bankroll,bankroll);},[bankroll,loaded]);
-  useEffect(()=>{if(loaded)sv(SK.theme,dark);},[dark,loaded]);
-  useEffect(()=>{if(loaded)sv(SK.myBooks,myBooks);},[myBooks,loaded]);
-
-  const fetchSport=useCallback(async(sportKey)=>{
-    const sport=SPORTS.find(s=>s.key===sportKey);
-    if(!sport) return;
-    setLoading(prev=>({...prev,[sportKey]:true}));
-    setErrors(prev=>({...prev,[sportKey]:null}));
-    const result=await fetchOdds(sport.api);
-    if(result.remaining!==null) setApiCredits(result.remaining);
-    if(result.error){setErrors(prev=>({...prev,[sportKey]:result.error}));setLoading(prev=>({...prev,[sportKey]:false}));return;}
-    const parsed=result.mock?getMockGames(sportKey):parseApiGames(result.games);
-    setGames(prev=>({...prev,[sportKey]:parsed}));
-    setLineHistory(prev=>{
-      const updated={...prev};
-      parsed.forEach(g=>{if(!updated[g.id]){updated[g.id]={};g.bookLines.forEach(bl=>{updated[g.id][bl.book]={spread:bl.spread,total:bl.total};});}});
-      return updated;
-    });
-    setLastFetch(prev=>({...prev,[sportKey]:new Date()}));
-    setLoading(prev=>({...prev,[sportKey]:false}));
-  },[]);
-
-  const currentGames=useMemo(()=>(games[activeSport]||[]).sort((a,b)=>a.time-b.time),[games,activeSport]);
-  const dayGroups=useMemo(()=>{const groups={};currentGames.forEach(g=>{if(!groups[g.dayKey])groups[g.dayKey]={label:g.dayLabel,games:[]};groups[g.dayKey].games.push(g);});return Object.entries(groups).sort((a,b)=>a[0].localeCompare(b[0]));},[currentGames]);
-  const alerts=useMemo(()=>{const all=[];Object.entries(games).forEach(([sk,gs])=>{gs.forEach(g=>{g.edges.filter(e=>myBooks.includes(e.book)).forEach(e=>{if(e.spreadEdge>=5)all.push({away:g.away,home:g.home,type:"Spread",edge:e.spreadEdge,book:e.book});if(e.totalEdge>=5)all.push({away:g.away,home:g.home,type:"Total",edge:e.totalEdge,book:e.book});});});});return all.sort((a,b)=>b.edge-a.edge).slice(0,20);},[games,myBooks]);
-
-  const addBet=async(bet)=>{
-    const newBet={...bet,timestamp:new Date().toISOString(),entryOdds:bet.entryOdds||bet.odds,closingOdds:null,clv:null};
-    const id=await dbAdd(newBet);
-    setBets(prev=>[{...newBet,id},...prev]);
-    setActiveTab("tracker");
-  };
-
-  const isMock=API_DISCONNECTED;
-  const pendingCLVCount=bets.filter(b=>b.clv===null||b.clv===undefined).length;
-
-  return (
-    <div style={{minHeight:"100vh",background:T.bg,color:T.text,fontFamily:F.body,transition:"background 0.2s,color 0.2s"}}>
-      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
-      <style>{`*{box-sizing:border-box;margin:0;padding:0} select option{background:${T.card};color:${T.text}} ::-webkit-scrollbar{height:3px} ::-webkit-scrollbar-thumb{background:${T.border};border-radius:2px} @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
-      <AlertBanner alerts={alerts} T={T}/>
-      {isMock&&<div style={{padding:"6px 18px",background:`${T.gold}12`,borderBottom:`1px solid ${T.gold}25`,display:"flex",alignItems:"center",gap:8}}><span style={{color:T.gold,fontSize:9,fontWeight:800,fontFamily:F.mono,letterSpacing:1}}>⚙ DEV MODE</span><span style={{color:T.dim,fontSize:9,fontFamily:F.mono}}>API disconnected · mock data · set API_DISCONNECTED = false to go live</span></div>}
-      {dbError&&<div style={{padding:"6px 18px",background:T.redBg,borderBottom:`1px solid ${T.red}22`,display:"flex",alignItems:"center",gap:8}}><span style={{color:T.red,fontSize:9,fontFamily:F.mono}}>⚠ {dbError}</span></div>}
-
-      <div style={{borderBottom:`1px solid ${T.border}`,padding:"10px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",background:T.card}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <div style={{width:28,height:28,borderRadius:4,background:`linear-gradient(135deg,${T.gold},${T.goldDim})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:900,color:dark?"#0d1117":"#fff",fontFamily:F.mono,letterSpacing:-1}}>SL</div>
-          <div><div style={{fontSize:14,fontWeight:800,letterSpacing:"-0.3px"}}>SHARPLINE</div><div style={{fontSize:8,fontFamily:F.mono,color:T.muted,letterSpacing:2}}>STOP GAMBLING. START INVESTING.</div></div>
-        </div>
-        <div style={{display:"flex",gap:6,alignItems:"center"}}>
-          {dbSyncing&&<span style={{fontSize:9,fontFamily:F.mono,color:T.gold}}>⟳ syncing</span>}
-          {!isMock&&apiCredits!==null&&<span style={{fontSize:9,fontFamily:F.mono,color:apiCredits<50?T.red:apiCredits<200?T.gold:T.muted,padding:"4px 8px",borderRadius:3,border:`1px solid ${T.border}`}}>{apiCredits} credits</span>}
-          <button onClick={()=>setShowBookSettings(!showBookSettings)} style={{background:showBookSettings?T.goldBg:"transparent",border:`1px solid ${showBookSettings?`${T.gold}40`:T.border}`,color:showBookSettings?T.gold:T.toggle,padding:"6px 10px",borderRadius:4,fontSize:12,cursor:"pointer"}}>⚙️</button>
-          <button onClick={()=>setDark(!dark)} style={{background:"transparent",border:`1px solid ${T.border}`,color:T.toggle,padding:"6px 10px",borderRadius:4,fontSize:12,cursor:"pointer"}}>{dark?"☀️":"🌙"}</button>
-        </div>
       </div>
 
-      {showBookSettings&&<div style={{borderBottom:`1px solid ${T.border}`,padding:"12px 18px",background:T.card}}>
-        <div style={{maxWidth:900,margin:"0 auto"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}><div style={{color:T.text,fontSize:12,fontWeight:700}}>My Sportsbooks ({myBooks.length})</div><div style={{display:"flex",gap:4}}><button onClick={()=>setMyBooks([...ALL_BOOKS])} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.dim,fontSize:9,fontFamily:F.mono,cursor:"pointer"}}>All</button><button onClick={()=>setMyBooks(DEFAULT_MY_BOOKS)} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.dim,fontSize:9,fontFamily:F.mono,cursor:"pointer"}}>Reset</button></div></div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>{ALL_BOOKS.map(b=>{const active=myBooks.includes(b);return <button key={b} onClick={()=>{if(active&&myBooks.length>1)setMyBooks(myBooks.filter(x=>x!==b));else if(!active)setMyBooks([...myBooks,b]);}} style={{padding:"5px 10px",borderRadius:4,border:`1px solid ${active?`${T.green}40`:T.border}`,background:active?T.greenBg:"transparent",color:active?T.green:T.muted,fontSize:10,fontWeight:600,cursor:"pointer"}}>{active&&"✓ "}{b}</button>;})}</div>
-        </div>
-      </div>}
-
-      <div style={{maxWidth:900,margin:"0 auto",padding:"14px 14px"}}>
-        <div style={{display:"flex",marginBottom:12,background:T.card,borderRadius:4,padding:2,border:`1px solid ${T.border}`}}>
-          {[{k:"scanner",l:"Scanner"},{k:"tracker",l:`Tracker (${bets.length})`},{k:"clv",l:`CLV${pendingCLVCount>0?` (${pendingCLVCount})`:""}`},{k:"bankroll",l:"Bankroll"}].map(t=><button key={t.k} onClick={()=>setActiveTab(t.k)} style={{flex:1,padding:"8px 12px",borderRadius:3,border:"none",background:activeTab===t.k?`${T.text}10`:"transparent",color:activeTab===t.k?T.text:T.muted,fontSize:11,fontWeight:600,cursor:"pointer"}}>{t.l}</button>)}
-        </div>
-
-        {activeTab==="scanner"&&<>
-          <div style={{display:"flex",gap:3,marginBottom:8,overflowX:"auto",paddingBottom:2}}>
-            {SPORTS.map(s=><button key={s.key} onClick={()=>setActiveSport(s.key)} style={{padding:"5px 12px",borderRadius:3,border:`1px solid ${activeSport===s.key?T.borderHi:T.border}`,background:activeSport===s.key?`${T.text}08`:"transparent",color:activeSport===s.key?T.text:T.muted,fontSize:11,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap",position:"relative"}}>
-              {s.icon} {s.label}
-              {loading[s.key]&&<span style={{position:"absolute",top:-2,right:-2,width:6,height:6,borderRadius:"50%",background:T.gold}}/>}
-              {games[s.key]&&!loading[s.key]&&<span style={{position:"absolute",top:-2,right:-2,width:6,height:6,borderRadius:"50%",background:T.green}}/>}
-            </button>)}
-          </div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap",gap:4}}>
-            <div style={{display:"flex",gap:3,alignItems:"center"}}>
-              <select value={bookFilter} onChange={e=>setBookFilter(e.target.value)} style={{padding:"3px 20px 3px 7px",borderRadius:3,border:`1px solid ${bookFilter!=="ALL"?`${T.gold}40`:T.border}`,background:bookFilter!=="ALL"?T.goldBg:"transparent",color:bookFilter!=="ALL"?T.gold:T.muted,fontSize:10,fontWeight:600,fontFamily:F.mono,appearance:"none",cursor:"pointer"}}>
-                <option value="ALL">All My Books ({myBooks.length})</option>{myBooks.map(b=><option key={b} value={b}>{b}</option>)}
-              </select>
-              <button onClick={()=>fetchSport(activeSport)} disabled={loading[activeSport]} style={{padding:"3px 10px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:loading[activeSport]?T.muted:T.dim,fontSize:9,fontWeight:600,cursor:loading[activeSport]?"wait":"pointer",fontFamily:F.mono}}>{loading[activeSport]?"⏳ Loading...":"↻ Refresh"}</button>
+      {/* Content */}
+      <div style={{padding:16}}>
+        {tab==="scanner"&&(
+          <>
+            <div style={{display:"flex",gap:4,marginBottom:10,overflowX:"auto",paddingBottom:4}}>
+              {SPORTS.map(s=>(
+                <div key={s.key} onClick={()=>setSport(s.key)} style={{padding:"6px 12px",borderRadius:4,cursor:"pointer",whiteSpace:"nowrap",background:sport===s.key?T.gold+"15":T.card,border:`1px solid ${sport===s.key?T.gold+"40":T.bdr}`,display:"flex",alignItems:"center",gap:4}}>
+                  <span style={{fontSize:12}}>{s.icon}</span>
+                  <span style={{fontSize:11,fontWeight:600,color:sport===s.key?T.gold:T.mut,fontFamily:F.m}}>{s.label}</span>
+                  {cache[s.key]&&<span style={{width:5,height:5,borderRadius:3,background:T.grn,display:"inline-block"}}></span>}
+                </div>
+              ))}
             </div>
-            <span style={{color:T.muted,fontSize:9,fontFamily:F.mono}}>{currentGames.length} games · {isMock?"MOCK DATA":"LIVE DATA"}{lastFetch[activeSport]&&<> · {new Date(lastFetch[activeSport]).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</>}</span>
-          </div>
-          {errors[activeSport]&&<div style={{marginBottom:8,padding:"8px 12px",background:T.redBg,border:`1px solid ${T.red}22`,borderRadius:4}}><span style={{color:T.red,fontSize:10,fontFamily:F.mono}}>⚠ {errors[activeSport]}</span></div>}
-          {loading[activeSport]&&currentGames.length===0&&<div style={{textAlign:"center",padding:40,color:T.muted}}><div style={{fontSize:20,marginBottom:8}}>⏳</div><div style={{fontSize:12}}>Loading {SPORTS.find(s=>s.key===activeSport)?.label}...</div></div>}
-          {dayGroups.map(([dayKey,group])=>(
-            <div key={dayKey}>
-              <div style={{padding:"6px 0",marginTop:8,marginBottom:4,borderBottom:`1px solid ${T.border}`}}><span style={{color:T.dim,fontSize:10,fontWeight:700,fontFamily:F.mono,letterSpacing:1}}>{group.label.toUpperCase()}</span><span style={{color:T.muted,fontSize:9,fontFamily:F.mono,marginLeft:8}}>{group.games.length} games</span></div>
-              {group.games.map(g=><GameCard key={g.id} game={g} bookFilter={bookFilter} onAddBet={addBet} bankroll={bankroll} unitSize={unitSize} T={T} myBooks={myBooks} lineHistory={lineHistory}/>)}
+
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <Btn pri onClick={fetchOdds} dis={loading}>{loading?"Loading...":"↻ Refresh Odds"}</Btn>
+              <span style={{fontSize:9,color:T.mut,fontFamily:F.m}}>
+                {cache[sport]?`Loaded ${Math.round((Date.now()-cache[sport].time)/6e4)}m ago`:"Not loaded"}
+                {games.length>0&&` · ${games.length} games`}
+              </span>
             </div>
-          ))}
-          {!loading[activeSport]&&currentGames.length===0&&!errors[activeSport]&&<div style={{textAlign:"center",padding:36,color:T.muted}}><div style={{fontSize:20,marginBottom:6,opacity:0.4}}>🔍</div><div style={{fontSize:12,marginBottom:8}}>No games loaded for {SPORTS.find(s=>s.key===activeSport)?.label} yet.</div><button onClick={()=>fetchSport(activeSport)} style={{padding:"6px 14px",borderRadius:3,border:`1px solid ${T.border}`,background:"transparent",color:T.dim,fontSize:10,cursor:"pointer",fontFamily:F.mono}}>↻ Load {SPORTS.find(s=>s.key===activeSport)?.label}</button></div>}
-        </>}
 
-        {activeTab==="tracker"&&<>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><span style={{fontSize:13,fontWeight:700}}>Betting Ledger</span><button onClick={()=>setShowManualBet(!showManualBet)} style={{background:T.green,color:dark?T.bg:"#fff",border:"none",padding:"6px 12px",borderRadius:3,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>+ LOG BET</button></div>
-          {showManualBet&&<ManualBetForm onAddBet={addBet} onClose={()=>setShowManualBet(false)} T={T}/>}
-          <BetTracker bets={bets} setBets={setBets} bankroll={bankroll} unitSize={unitSize} T={T} dbSyncing={dbSyncing}/>
-        </>}
+            {enriched.length>0?(
+              enriched.map((g,i)=><GameCard key={g.id} game={g} index={i}/>)
+            ):(
+              <div style={{textAlign:"center",padding:60,color:T.mut}}>
+                <div style={{fontSize:32,marginBottom:12}}>◎</div>
+                <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>Hit Refresh to scan for edges</div>
+                <div style={{fontSize:11,fontFamily:F.m}}>Manual refresh only — you control credit usage</div>
+              </div>
+            )}
+          </>
+        )}
 
-        {activeTab==="clv"&&<><div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Closing Line Value</div><CLVTab bets={bets} setBets={setBets} T={T}/></>}
+        {tab==="tracker"&&<Tracker/>}
+        {tab==="dashboard"&&<Dashboard/>}
+        {tab==="settings"&&<Settings/>}
 
-        {activeTab==="bankroll"&&<>
-          <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Bankroll Management</div>
-          <BankrollPanel bankroll={bankroll} setBankroll={setBankroll} unitSize={unitSize} T={T}/>
-          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:6,padding:14}}>
-            <div style={{color:T.gold,fontSize:11,fontWeight:700,marginBottom:8}}>Unit Sizing by Edge</div>
-            <div style={{color:T.dim,fontSize:11,lineHeight:1.7,marginBottom:10}}>1 unit = 1% of bankroll. Size scales with edge. Max 5 units (5%) — never overbet a single game.</div>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:6}}>
-              {[{r:"3-4% edge",u:"2 units",a:bankroll>0?`$${(2*unitSize).toLocaleString()}`:"—"},{r:"4-6% edge",u:"3 units",a:bankroll>0?`$${(3*unitSize).toLocaleString()}`:"—"},{r:"6-8% edge",u:"4 units",a:bankroll>0?`$${(4*unitSize).toLocaleString()}`:"—"},{r:"8%+ edge",u:"5 units MAX",a:bankroll>0?`$${(5*unitSize).toLocaleString()}`:"—"}].map(r=><div key={r.r} style={{padding:"8px 10px",background:`${T.muted}08`,borderRadius:3,border:`1px solid ${T.border}`}}><div style={{color:T.green,fontSize:10,fontWeight:700,fontFamily:F.mono}}>{r.r}</div><div style={{color:T.text,fontSize:12,fontWeight:600,fontFamily:F.mono,marginTop:3}}>{r.u}</div><div style={{color:T.gold,fontSize:11,fontFamily:F.mono,marginTop:1}}>{r.a}</div></div>)}
-            </div>
-          </div>
-        </>}
-
-        <div style={{marginTop:24,paddingTop:12,borderTop:`1px solid ${T.border}`,textAlign:"center",color:T.muted,fontSize:9,fontFamily:F.mono,lineHeight:1.8}}>
-          {isMock?"DEV MODE · MOCK DATA":"LIVE ODDS"} · {myBooks.length} SPORTSBOOKS · CLOUD SYNC · sharpline.com
+        <div style={{marginTop:24,paddingTop:12,borderTop:`1px solid ${T.bdr}`,textAlign:"center",color:T.mut,fontSize:8,fontFamily:F.m,lineHeight:1.8,letterSpacing:".05em"}}>
+          LIVE ODDS · {myBooks.length||"ALL"} SPORTSBOOKS · CLOUD SYNC · SHARPLINE
         </div>
       </div>
     </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<SharpLine />);
+ReactDOM.createRoot(document.getElementById("root")).render(<SharpLine/>);
 </script>
 </body>
 </html>
