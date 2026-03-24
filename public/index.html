@@ -97,8 +97,9 @@ function calcEdge(yours,sharp){
 // CLV: how much value your entry captured vs closing line
 const calcCLV=(entry,close)=>{const e=a2i(entry),c=a2i(close);return((c-e)/e)*100;};
 
-// Unit sizing — scales with edge, max 5u (5% of bankroll)
-const suggestUnits=e=>e>=8?5:e>=6?4:e>=4?3:e>=2.5?2:1;
+// Unit sizing — Walters: max 3% of bankroll, scale with edge, 0.5u increments
+// "limit your maximum wager on any single event to three percent"
+const suggestUnits=e=>e>=7?3:e>=5.5?2.5:e>=4.5?2:e>=3.5?1.5:e>=3?1:0.5;
 
 // Robust median (resists outlier skew vs mean)
 function median(arr){
@@ -328,30 +329,50 @@ function analyzeResearch(game,recentScores){
 // §7  SHARPLINE SCORING ENGINE
 // ════════════════════════════════════════════════════════════════
 
+// Walters principle: "everything begins and ends with value"
+// Most games should score LOW. An "A" is rare — maybe 1-2 per day.
+// We're looking for genuine market inefficiency, not noise.
+
 function scoreGame(game,research){
-  const w={edge:.30,sharp:.25,juice:.15,move:.10,research:.10,half:.10};
-  const s={edge:0,sharp:0,juice:0,move:0,research:0,half:0};
+  const w={edge:.35,sharpDir:.20,juice:.15,move:.10,research:.10,half:.10};
+  const s={edge:0,sharpDir:0,juice:0,move:0,research:0,half:0};
 
-  // Edge score (0-100) — best available edge across all markets
+  // Edge score (0-100) — requires REAL edge, not vig noise
+  // In efficient markets (NBA/NHL), sub-2% edges are just normal vig spread
   const maxE=Math.max(game.bestSpreadEdge||0,game.bestTotalEdge||0,game.bestMlEdge||0);
-  s.edge=Math.min(maxE*15,100);
+  if(maxE>=3)s.edge=Math.min((maxE-2)*25,100); // Only scores above 2% count; 6%=100
+  else s.edge=0; // Sub-3% is market noise, not edge
 
-  // Sharp consensus (0-100) — are sharp books in play?
-  if(game.conSrc==="sharp")s.sharp=Math.min(game.sharpN*25,100);
-
-  // Juice signal (0-100) — vig asymmetry
-  if(game.juiceSig)s.juice=Math.min(game.juiceSig.strength*20,100);
-
-  // Line movement (0-100)
-  if(game.movement){
-    const mv=Math.abs(game.movement.spreadDelta||0);
-    s.move=Math.min(mv*40,100);
+  // Sharp directional agreement (0-100)
+  // NOT "are sharp books present" — they're ALWAYS present in NBA/NHL
+  // Instead: do sharp books disagree with retail books on the number?
+  // If Pinnacle has -108 and retail median is -112, sharps see value on the other side
+  if(game.conSrc==="sharp"&&game.sharpN>=2){
+    // Compare sharp median odds to full-market median odds
+    // Bigger disagreement = stronger directional signal
+    const allSpOdds=[];
+    for(const sl of game.spreadLines||[]){
+      for(const e of sl.entries)allSpOdds.push(e.awOd);
+    }
+    const mktMed=median(allSpOdds);
+    const sharpDiff=Math.abs(a2i(game.shSpMed)-a2i(mktMed))*100;
+    // Only meaningful if sharp-vs-market disagreement exceeds 1.5 points
+    if(sharpDiff>1.5)s.sharpDir=Math.min(sharpDiff*20,100);
   }
 
-  // Research (0-100)
+  // Juice signal (0-100) — raised threshold: 5+ avg points of vig asymmetry
+  if(game.juiceSig&&game.juiceSig.strength>=5)s.juice=Math.min((game.juiceSig.strength-4)*25,100);
+
+  // Line movement (0-100) — only meaningful moves
+  if(game.movement){
+    const mv=Math.abs(game.movement.spreadDelta||0);
+    if(mv>=0.5)s.move=Math.min(mv*30,100); // 0.5pt move starts counting; 3pt=90
+  }
+
+  // Research (0-100) — situational factors
   if(research&&research.factors.length){
     const tot=research.factors.reduce((a,f)=>a+Math.abs(f.impact),0);
-    s.research=Math.min(tot*15,100);
+    s.research=Math.min(tot*12,100);
   }
 
   // Half-point value (0-100)
@@ -359,7 +380,10 @@ function scoreGame(game,research){
 
   let total=0;
   for(const[k,v]of Object.entries(w))total+=(s[k]||0)*v;
-  const grade=total>=70?"A":total>=55?"B":total>=40?"C":total>=25?"D":"F";
+
+  // Tighter grade curve — A should be RARE
+  // Walters passed on most games. Grade reflects actionability.
+  const grade=total>=60?"A":total>=45?"B":total>=30?"C":total>=15?"D":"F";
   return{total:Math.round(total),parts:s,grade};
 }
 
@@ -369,8 +393,11 @@ function scoreGame(game,research){
 
 function genRecs(game,research){
   const recs=[];
+  // Walters: "bet only when your model shows at least a half-point advantage"
+  // 3% edge minimum for ANY recommendation — below that is market noise
+  // HIGH confidence requires 5%+, MEDIUM 4%+, LOW 3%+
   const add=(type,side,line,odds,book,edge,reasons)=>{
-    const conf=edge>=5?"HIGH":edge>=3?"MEDIUM":edge>=1.5?"LOW":null;
+    const conf=edge>=5?"HIGH":edge>=4?"MEDIUM":edge>=3?"LOW":null;
     if(!conf)return;
     recs.push({type,side,line,odds,book,edge:+edge.toFixed(1),units:suggestUnits(edge),conf,reasons});
   };
@@ -387,13 +414,13 @@ function genRecs(game,research){
   // ── Spread recs ──
   if(game.spreadLines){
     for(const sl of game.spreadLines){
-      if(sl.bestAwayEdge>1.5){
+      if(sl.bestAwayEdge>3){
         const r=[`${sl.bestAwayEdge.toFixed(1)}% edge vs ${game.conSrc} consensus`];
         if(sl.bestAwayBook)r.push(`Best number at ${sl.bestAwayBook}`);
         r.push(...resFor(game.away_team,game.home_team));
         add("Spread",game.away_team,sl.awaySpread,sl.bestAwayOdds,sl.bestAwayBook,sl.bestAwayEdge,r);
       }
-      if(sl.bestHomeEdge>1.5){
+      if(sl.bestHomeEdge>3){
         const r=[`${sl.bestHomeEdge.toFixed(1)}% edge vs ${game.conSrc} consensus`];
         if(sl.bestHomeBook)r.push(`Best number at ${sl.bestHomeBook}`);
         r.push(...resFor(game.home_team,game.away_team));
@@ -405,7 +432,7 @@ function genRecs(game,research){
   // ── Total recs ──
   if(game.totalLines){
     for(const tl of game.totalLines){
-      if(tl.bestOverEdge>1.5){
+      if(tl.bestOverEdge>3){
         const r=[`${tl.bestOverEdge.toFixed(1)}% edge on Over ${tl.total}`];
         if(tl.bestOverBook)r.push(`Best number at ${tl.bestOverBook}`);
         if(research){
@@ -414,7 +441,7 @@ function genRecs(game,research){
         }
         add("Total","Over",tl.total,tl.bestOverOdds,tl.bestOverBook,tl.bestOverEdge,r);
       }
-      if(tl.bestUnderEdge>1.5){
+      if(tl.bestUnderEdge>3){
         const r=[`${tl.bestUnderEdge.toFixed(1)}% edge on Under ${tl.total}`];
         if(tl.bestUnderBook)r.push(`Best number at ${tl.bestUnderBook}`);
         add("Total","Under",tl.total,tl.bestUnderOdds,tl.bestUnderBook,tl.bestUnderEdge,r);
@@ -422,11 +449,11 @@ function genRecs(game,research){
     }
   }
 
-  // ── Moneyline recs (only if meaningful edge) ──
+  // ── Moneyline recs (only if significant edge — 3.5% minimum for ML) ──
   if(game.mlData){
     const ml=game.mlData;
-    if(ml.bestAwayEdge>2)add("ML",game.away_team,"",ml.bestAwayOdds,ml.bestAwayBook,ml.bestAwayEdge,[`${ml.bestAwayEdge.toFixed(1)}% ML edge at ${ml.bestAwayBook}`]);
-    if(ml.bestHomeEdge>2)add("ML",game.home_team,"",ml.bestHomeOdds,ml.bestHomeBook,ml.bestHomeEdge,[`${ml.bestHomeEdge.toFixed(1)}% ML edge at ${ml.bestHomeBook}`]);
+    if(ml.bestAwayEdge>3.5)add("ML",game.away_team,"",ml.bestAwayOdds,ml.bestAwayBook,ml.bestAwayEdge,[`${ml.bestAwayEdge.toFixed(1)}% ML edge at ${ml.bestAwayBook}`]);
+    if(ml.bestHomeEdge>3.5)add("ML",game.home_team,"",ml.bestHomeOdds,ml.bestHomeBook,ml.bestHomeEdge,[`${ml.bestHomeEdge.toFixed(1)}% ML edge at ${ml.bestHomeBook}`]);
   }
 
   recs.sort((a,b)=>b.edge-a.edge);
@@ -559,7 +586,7 @@ function processGames(raw,myBooks){
       const avgA=jAw.reduce((a,b)=>a+b,0)/jAw.length;
       const avgH=jHm.reduce((a,b)=>a+b,0)/jHm.length;
       const diff=Math.abs(avgA-avgH);
-      if(diff>3)juiceSig={side:avgA<avgH?g.away_team:g.home_team,strength:Math.min(Math.round(diff),10),detail:`Vig loaded toward ${avgA<avgH?g.away_team:g.home_team} (avg diff: ${diff.toFixed(0)})`};
+      if(diff>5)juiceSig={side:avgA<avgH?g.away_team:g.home_team,strength:Math.min(Math.round(diff),10),detail:`Vig loaded toward ${avgA<avgH?g.away_team:g.home_team} (avg diff: ${diff.toFixed(0)})`};
     }
 
     // ── Half-point value ──
@@ -749,7 +776,7 @@ function SharpLine(){
     const res=g.research,sc=g.score,recs=g.recs;
 
     return(
-      <div className="fade-up" style={{animationDelay:`${idx*40}ms`,background:T.card,border:`1px solid ${bestE>3?T.gold+"40":T.bdr}`,borderRadius:8,marginBottom:8,overflow:"hidden"}}>
+      <div className="fade-up" style={{animationDelay:`${idx*40}ms`,background:T.card,border:`1px solid ${bestE>=5?T.gold+"40":T.bdr}`,borderRadius:8,marginBottom:8,overflow:"hidden"}}>
         {/* Header */}
         <div onClick={()=>setExpanded(exp?null:g.id)} style={{padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div style={{flex:1}}>
@@ -757,11 +784,11 @@ function SharpLine(){
             <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
               <span style={{fontSize:10,color:T.mut,fontFamily:F.m}}>{time}</span>
               {sc&&<Badge bg={sc.grade==="A"?T.grnB:sc.grade==="B"?T.bluB:sc.grade==="C"?T.ornB:T.bdr} color={sc.grade==="A"?T.grn:sc.grade==="B"?T.blu:sc.grade==="C"?T.orn:T.mut}>{sc.grade}·{sc.total}</Badge>}
-              {bestE>1.5&&<Badge bg={bestE>4?T.gold+"20":T.grnB} color={bestE>4?T.gold:T.grn}>{bestE.toFixed(1)}%</Badge>}
+              {bestE>=3&&<Badge bg={bestE>5?T.gold+"20":T.grnB} color={bestE>5?T.gold:T.grn}>EDGE {bestE.toFixed(1)}%</Badge>}
               {recs.length>0&&<Badge bg={T.gold+"15"} color={T.gold}>⚡{recs.length}</Badge>}
               {res&&res.factors.length>0&&<Badge bg={T.purB} color={T.pur}>📋{res.factors.length}</Badge>}
               {g.movement&&Math.abs(g.movement.spreadDelta)>0&&<Badge bg={T.bluB} color={T.blu}>{g.movement.spreadDelta>0?"↑":"↓"}{Math.abs(g.movement.spreadDelta).toFixed(1)}</Badge>}
-              {g.conSrc==="sharp"&&<Badge bg={T.grnB} color={T.grn}>SHARP</Badge>}
+              {bestE<2&&recs.length===0&&<Badge bg={T.bdr} color={T.mut}>NO PLAY</Badge>}
             </div>
           </div>
           <span style={{color:T.mut,fontSize:16,transform:exp?"rotate(180deg)":"none",transition:"transform .2s"}}>▾</span>
@@ -845,11 +872,11 @@ function SharpLine(){
                     return(
                       <React.Fragment key={ei}>
                         <div style={{padding:"5px 6px",color:isSh?T.grn:T.tx,background:ei%2?T.card2:"transparent",borderRadius:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.book}{isSh?" ★":""}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ae>1.5?T.grn:T.tx,fontWeight:ae>1.5?700:400}}>{e.awOd>0?"+":""}{e.awOd}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:he>1.5?T.grn:T.tx,fontWeight:he>1.5?700:400}}>{e.hmOd>0?"+":""}{e.hmOd}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>3?T.gold:thisE>1.5?T.grn:T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ae>3?T.grn:T.tx,fontWeight:ae>3?700:400}}>{e.awOd>0?"+":""}{e.awOd}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:he>3?T.grn:T.tx,fontWeight:he>3?700:400}}>{e.hmOd>0?"+":""}{e.hmOd}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>5?T.gold:thisE>3?T.grn:thisE>1?T.mut+"99":T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
                         <div style={{padding:"3px 4px",background:ei%2?T.card2:"transparent"}}>
-                          {thisE>1.5&&<Btn sm pri onClick={()=>trackBet({
+                          {thisE>3&&<Btn sm pri onClick={()=>trackBet({
                             sport:SPORTS.find(s=>s.key===sport)?.label||sport,
                             game:`${g.away_team} @ ${g.home_team}`,
                             type:"Spread",line:`${best==="away"?e.awSp:e.hmSp}`,
@@ -886,11 +913,11 @@ function SharpLine(){
                     return(
                       <React.Fragment key={ei}>
                         <div style={{padding:"5px 6px",color:isSh?T.grn:T.tx,background:ei%2?T.card2:"transparent"}}>{e.book}{isSh?" ★":""}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:oe>1.5?T.grn:T.tx,fontWeight:oe>1.5?700:400}}>{e.ovOd>0?"+":""}{e.ovOd}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ue>1.5?T.grn:T.tx,fontWeight:ue>1.5?700:400}}>{e.unOd>0?"+":""}{e.unOd}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>3?T.gold:thisE>1.5?T.grn:T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:oe>3?T.grn:T.tx,fontWeight:oe>3?700:400}}>{e.ovOd>0?"+":""}{e.ovOd}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ue>3?T.grn:T.tx,fontWeight:ue>3?700:400}}>{e.unOd>0?"+":""}{e.unOd}</div>
+                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>5?T.gold:thisE>3?T.grn:thisE>1?T.mut+"99":T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
                         <div style={{padding:"3px 4px",background:ei%2?T.card2:"transparent"}}>
-                          {thisE>1.5&&<Btn sm pri onClick={()=>trackBet({
+                          {thisE>3&&<Btn sm pri onClick={()=>trackBet({
                             sport:SPORTS.find(s=>s.key===sport)?.label||sport,
                             game:`${g.away_team} @ ${g.home_team}`,
                             type:"Total",line:`${best==="over"?"O":"U"} ${tl.total}`,
@@ -935,7 +962,7 @@ function SharpLine(){
 
             {/* Consensus Footer */}
             <div style={{marginTop:8,padding:"6px 10px",background:T.card2,borderRadius:4,fontSize:9,fontFamily:F.m,color:T.mut}}>
-              {g.conSrc==="sharp"?"★":"○"} {g.conSrc==="sharp"?`Sharp consensus (${g.sharpN} books)`:"Market median (no sharp books)"} · Spread: {g.shSpMed>0?"+":""}{g.shSpMed} · Total: {g.shToMed>0?"+":""}{g.shToMed}
+              Benchmark: {g.conSrc==="sharp"?`${g.sharpN} sharp books (Pinnacle/Circa/Bookmaker)`:"Full market median"} · Spread: {g.shSpMed>0?"+":""}{g.shSpMed} · Total: {g.shToMed>0?"+":""}{g.shToMed}
               {g.juiceSig&&<span style={{color:T.orn}}> · Juice: {g.juiceSig.detail}</span>}
             </div>
           </div>
@@ -1097,9 +1124,9 @@ function SharpLine(){
 
         <div style={{padding:"12px 14px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:8}}>
           <div style={{fontSize:10,fontWeight:700,color:T.gold,fontFamily:F.m,marginBottom:8,textTransform:"uppercase"}}>Unit Sizing Guide</div>
-          <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:8,lineHeight:1.5}}>Size scales with edge. Max 5u (5% of bankroll) — never overbet a single game.</div>
+          <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:8,lineHeight:1.5}}>Walters: "limit your maximum wager to 3% of bankroll." Scale with edge, 0.5u increments.</div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:6}}>
-            {[{r:"1.5–2.5%",u:"1 unit",n:1},{r:"2.5–4%",u:"2 units",n:2},{r:"4–6%",u:"3 units",n:3},{r:"6–8%",u:"4 units",n:4},{r:"8%+",u:"5u MAX",n:5}].map(x=>(
+            {[{r:"3–3.5%",u:"0.5 unit",n:0.5},{r:"3.5–4.5%",u:"1 unit",n:1},{r:"4.5–5.5%",u:"1.5 units",n:1.5},{r:"5.5–7%",u:"2 units",n:2},{r:"7%+",u:"2.5–3u MAX",n:3}].map(x=>(
               <div key={x.r} style={{padding:"8px 10px",background:T.card2,borderRadius:4,border:`1px solid ${T.bdr}`}}>
                 <div style={{color:T.grn,fontSize:10,fontWeight:700,fontFamily:F.m}}>{x.r} edge</div>
                 <div style={{color:T.txB,fontSize:12,fontWeight:700,fontFamily:F.m,marginTop:2}}>{x.u}</div>
