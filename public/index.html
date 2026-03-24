@@ -769,6 +769,108 @@ function SharpLine(){
     await dbUpdate(id,{closingOdds,clv});
     setBets(prev=>prev.map(b=>b.id===id?{...b,closingOdds,clv}:b));
   };
+
+  // Fetch closing line from API for a specific bet (1 credit per fetch)
+  const[clvFetching,setClvFetching]=useState(null);
+  const[clvFetchErr,setClvFetchErr]=useState(null);
+  const fetchCLV=async(bet)=>{
+    setClvFetching(bet.id);
+    setClvFetchErr(null);
+    try{
+      // Map sport label back to API key
+      const sportObj=SPORTS.find(s=>s.label===bet.sport);
+      if(!sportObj){setClvFetchErr("Unknown sport: "+bet.sport);setClvFetching(null);return;}
+
+      // Determine which market to look for
+      const marketKey=bet.type==="ML"?"h2h":bet.type==="Total"?"totals":"spreads";
+      const res=await fetch(`/api/odds?sport=${sportObj.key}&markets=${marketKey}`);
+      const data=await res.json();
+      const rem=res.headers.get("x-requests-remaining");
+      if(rem)setCredits(+rem);
+
+      if(!Array.isArray(data)||!data.length){setClvFetchErr("No odds data returned");setClvFetching(null);return;}
+
+      // Parse team names from bet.game ("Away @ Home")
+      const parts=bet.game.split(" @ ");
+      const awayName=parts[0]?.trim();
+      const homeName=parts[1]?.trim();
+
+      // Find the matching game
+      const game=data.find(g=>{
+        const hm=g.home_team?.toLowerCase();
+        const aw=g.away_team?.toLowerCase();
+        return(hm?.includes(homeName?.toLowerCase())||homeName?.toLowerCase()?.includes(hm))&&
+              (aw?.includes(awayName?.toLowerCase())||awayName?.toLowerCase()?.includes(aw));
+      });
+
+      if(!game){setClvFetchErr("Game not found — may have already completed (>24hr)");setClvFetching(null);return;}
+
+      // Get sharp consensus closing odds
+      const bms=game.bookmakers||[];
+      const sharpBms=bms.filter(b=>SHARP_BOOKS.includes(b.key));
+      const conBms=sharpBms.length>=MIN_SHARP?sharpBms:bms;
+
+      let closingOdds=null;
+
+      if(bet.type==="Spread"){
+        const odds=[];
+        for(const bm of conBms){
+          const mk=bm.markets?.find(m=>m.key==="spreads");
+          if(!mk)continue;
+          // Match the side: if bet.line starts with "-", it's the favorite
+          const betLine=parseFloat(bet.line);
+          const aw=mk.outcomes?.find(o=>o.name===game.away_team);
+          const hm=mk.outcomes?.find(o=>o.name===game.home_team);
+          // Find which side matches the bet's line
+          if(aw&&Math.abs(aw.point-betLine)<0.5)odds.push(aw.price);
+          else if(hm&&Math.abs(hm.point-betLine)<0.5)odds.push(hm.price);
+          else if(aw)odds.push(aw.price); // fallback: use away
+        }
+        if(odds.length)closingOdds=Math.round(median(odds));
+      }else if(bet.type==="Total"){
+        const odds=[];
+        const isOver=bet.line?.startsWith("O");
+        for(const bm of conBms){
+          const mk=bm.markets?.find(m=>m.key==="totals");
+          if(!mk)continue;
+          const side=mk.outcomes?.find(o=>o.name===(isOver?"Over":"Under"));
+          if(side)odds.push(side.price);
+        }
+        if(odds.length)closingOdds=Math.round(median(odds));
+      }else if(bet.type==="ML"){
+        const odds=[];
+        // Determine which team the bet is on
+        const betTeam=bet.line||awayName; // ML bets might store team in line or side
+        for(const bm of conBms){
+          const mk=bm.markets?.find(m=>m.key==="h2h");
+          if(!mk)continue;
+          // Try to match team
+          const match=mk.outcomes?.find(o=>o.name?.toLowerCase()?.includes(betTeam?.toLowerCase()?.split(" ").pop()));
+          if(match)odds.push(match.price);
+          else{
+            // Fallback: use the side with closer odds to entry
+            for(const o of mk.outcomes||[]){
+              if(Math.abs(o.price-bet.odds)<50)odds.push(o.price);
+            }
+          }
+        }
+        if(odds.length)closingOdds=Math.round(median(odds));
+      }
+
+      if(closingOdds===null){setClvFetchErr("Could not find matching odds in API response");setClvFetching(null);return;}
+
+      // Calculate and save CLV
+      const clv=calcCLV(bet.entryOdds||bet.odds,closingOdds);
+      await dbUpdate(bet.id,{closingOdds,clv});
+      setBets(prev=>prev.map(b=>b.id===bet.id?{...b,closingOdds,clv}:b));
+      setClvFetching(null);
+    }catch(err){
+      console.error("fetchCLV error:",err);
+      setClvFetchErr(err.message||"Fetch failed");
+      setClvFetching(null);
+    }
+  };
+
   const deleteBet=async id=>{
     await dbDel(id);
     setBets(prev=>prev.filter(b=>b.id!==id));
@@ -1084,12 +1186,19 @@ function SharpLine(){
         {needClv.length>0&&(
           <div style={{marginBottom:16}}>
             <div style={{fontSize:10,fontWeight:700,color:T.blu,fontFamily:F.m,marginBottom:6,textTransform:"uppercase"}}>Enter Closing Lines ({needClv.length})</div>
+            {clvFetchErr&&<div onClick={()=>setClvFetchErr(null)} style={{padding:"8px 10px",background:T.redB,border:`1px solid ${T.red}40`,borderRadius:4,marginBottom:8,fontSize:10,fontFamily:F.m,color:T.red,cursor:"pointer"}}>{clvFetchErr} <span style={{color:T.mut}}>(tap to dismiss)</span></div>}
             {needClv.map(b=>(
               <div key={b.id} style={{padding:"10px 12px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:6,marginBottom:6}}>
                 <div style={{fontSize:11,fontWeight:600,color:T.txB,marginBottom:4}}>{b.game} — {b.type} {b.line}</div>
                 <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:6}}>Entry: {b.odds>0?"+":""}{b.odds} · Result: <span style={{color:b.result==="W"?T.grn:T.red}}>{b.result}</span></div>
+                <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
+                  <Btn sm style={{background:T.bluB,color:T.blu}} dis={clvFetching===b.id} onClick={()=>fetchCLV(b)}>
+                    {clvFetching===b.id?"Fetching...":"⟳ Fetch CLV"}
+                  </Btn>
+                  <span style={{fontSize:9,color:T.mut,fontFamily:F.m}}>1 API credit · works within 24hr of game end</span>
+                </div>
                 <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                  <input type="number" placeholder="Closing odds (e.g. -115)" value={clvIn[b.id]||""} onChange={e=>setClvIn(p=>({...p,[b.id]:e.target.value}))} style={{flex:1,padding:"6px 8px",background:T.card2,border:`1px solid ${T.bdr}`,borderRadius:4,color:T.tx,fontSize:11,fontFamily:F.m,outline:"none"}}/>
+                  <input type="number" placeholder="Or enter manually (e.g. -115)" value={clvIn[b.id]||""} onChange={e=>setClvIn(p=>({...p,[b.id]:e.target.value}))} style={{flex:1,padding:"6px 8px",background:T.card2,border:`1px solid ${T.bdr}`,borderRadius:4,color:T.tx,fontSize:11,fontFamily:F.m,outline:"none"}}/>
                   {clvIn[b.id]&&(
                     <span style={{fontSize:10,fontFamily:F.m,color:calcCLV(b.entryOdds||b.odds,+clvIn[b.id])>0?T.grn:T.red}}>
                       CLV: {calcCLV(b.entryOdds||b.odds,+clvIn[b.id]).toFixed(1)}%
