@@ -237,15 +237,27 @@ async function dbLoad(){
 
 async function dbAdd(bet){
   try{
-    const{data,error}=await sb.from("bets").insert({
-      user_id:UID,sport:bet.sport,game:bet.game,type:bet.type,
-      line:bet.line,odds:bet.odds,book:bet.book,edge:bet.edge,
-      units:bet.units,result:null,entry_odds:bet.entryOdds||bet.odds,
-      closing_odds:null,clv:null,timestamp:new Date().toISOString(),
-    }).select().single();
+    // Validate and cast types to match Supabase schema
+    const row={
+      user_id:UID,
+      sport:bet.sport||"Unknown",
+      game:bet.game||"Unknown",
+      type:bet.type||"Unknown",
+      line:String(bet.line||""),
+      odds:Math.round(Number(bet.odds)||0),
+      book:bet.book||"Unknown",
+      edge:Number(bet.edge)||0,
+      units:Number(bet.units)||1,
+      result:null,
+      entry_odds:Math.round(Number(bet.entryOdds||bet.odds)||0),
+      closing_odds:null,
+      clv:null,
+      timestamp:new Date().toISOString(),
+    };
+    const{data,error}=await sb.from("bets").insert(row).select().single();
     if(error)throw error;
     return data.id;
-  }catch(e){console.error("dbAdd:",e);return null;}
+  }catch(e){console.error("dbAdd:",e);throw e;}
 }
 
 async function dbUpdate(id,fields){
@@ -717,8 +729,10 @@ function SharpLine(){
   },[games,scores,sport]);
 
   // ── Bet actions ──
+  const[trackErr,setTrackErr]=useState(null);
   const trackBet=async(bet,btnKey)=>{
     setTracked(btnKey||"saving");
+    setTrackErr(null);
     try{
       const id=await dbAdd(bet);
       if(id){
@@ -727,12 +741,14 @@ function SharpLine(){
         setTimeout(()=>{setTab("tracker");setTracked(null);},600);
       }else{
         setTracked("error");
-        setTimeout(()=>setTracked(null),2000);
+        setTrackErr("No ID returned");
+        setTimeout(()=>{setTracked(null);setTrackErr(null);},4000);
       }
     }catch(err){
       console.error("trackBet error:",err);
       setTracked("error");
-      setTimeout(()=>setTracked(null),2000);
+      setTrackErr(err.message||err.details||JSON.stringify(err));
+      setTimeout(()=>{setTracked(null);setTrackErr(null);},4000);
     }
   };
   const updateResult=async(id,result)=>{
@@ -1231,6 +1247,7 @@ function SharpLine(){
 
       {/* Content */}
       <div style={{padding:16}}>
+        {trackErr&&<div style={{padding:"8px 12px",background:T.redB,border:`1px solid ${T.red}40`,borderRadius:6,marginBottom:10,fontSize:10,fontFamily:F.m,color:T.red}}>Track error: {trackErr}</div>}
         {tab==="scanner"&&(
           <>
             <div style={{display:"flex",gap:4,marginBottom:10,overflowX:"auto",paddingBottom:4}}>
