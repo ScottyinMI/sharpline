@@ -741,14 +741,17 @@ function SharpLine(){
         setTimeout(()=>{setTab("tracker");setTracked(null);},600);
       }else{
         setTracked("error");
-        setTrackErr("No ID returned");
-        setTimeout(()=>{setTracked(null);setTrackErr(null);},4000);
+        setTrackErr("dbAdd returned null — no ID");
       }
     }catch(err){
-      console.error("trackBet error:",err);
+      console.error("trackBet full error:",err);
       setTracked("error");
-      setTrackErr(err.message||err.details||JSON.stringify(err));
-      setTimeout(()=>{setTracked(null);setTrackErr(null);},4000);
+      // Capture every possible error field from Supabase
+      const msg=err.message||"";
+      const det=err.details||"";
+      const hint=err.hint||"";
+      const code=err.code||"";
+      setTrackErr(`${msg}${det?" | "+det:""}${hint?" | "+hint:""}${code?" ["+code+"]":""}`||JSON.stringify(err));
     }
   };
   const updateResult=async(id,result)=>{
@@ -1247,7 +1250,7 @@ function SharpLine(){
 
       {/* Content */}
       <div style={{padding:16}}>
-        {trackErr&&<div style={{padding:"8px 12px",background:T.redB,border:`1px solid ${T.red}40`,borderRadius:6,marginBottom:10,fontSize:10,fontFamily:F.m,color:T.red}}>Track error: {trackErr}</div>}
+        {trackErr&&<div onClick={()=>setTrackErr(null)} style={{padding:"10px 12px",background:T.redB,border:`1px solid ${T.red}40`,borderRadius:6,marginBottom:10,fontSize:11,fontFamily:F.m,color:T.red,cursor:"pointer",lineHeight:1.5}}>⚠ Track failed: {trackErr}<br/><span style={{fontSize:9,color:T.mut}}>Tap to dismiss</span></div>}
         {tab==="scanner"&&(
           <>
             <div style={{display:"flex",gap:4,marginBottom:10,overflowX:"auto",paddingBottom:4}}>
