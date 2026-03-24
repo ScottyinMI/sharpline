@@ -491,9 +491,9 @@ function processGames(raw,myBooks,sportKey){
 
     // Sport-specific edge dampening factor
     // NHL/MLB: puck lines and run lines have moneyline-like variance
-    // that inflates raw edge calculations. 0.5x corrects for this.
-    const spDamp=sportType==="hockey"||sportType==="baseball"?0.5:1;
-    const toDamp=sportType==="hockey"||sportType==="baseball"?0.7:1; // totals less affected
+    // that inflates raw edge calculations. 0.35x for spreads/ML, 0.5x for totals.
+    const spDamp=sportType==="hockey"||sportType==="baseball"?0.35:1;
+    const toDamp=sportType==="hockey"||sportType==="baseball"?0.5:1;
 
     // Helper: does user have this book?
     const hasBook=title=>!myBooks.length||myBooks.some(mb=>title.toLowerCase().includes(mb.toLowerCase()));
@@ -918,7 +918,7 @@ function SharpLine(){
                   <div style={{padding:"4px 6px"}}></div>
                   {sl.entries.sort((a,b)=>b.awOd-a.awOd).map((e,ei)=>{
                     const isSh=SHARP_BOOKS.includes(e.bk);
-                    const spD=g.sportType==="hockey"||g.sportType==="baseball"?0.5:1;
+                    const spD=g.sportType==="hockey"||g.sportType==="baseball"?0.35:1;
                     const ae=calcEdge(e.awOd,g.shSpMed,spD),he=calcEdge(e.hmOd,g.shSpMed,spD);
                     const best=ae>he?"away":"home";
                     const thisE=Math.max(ae,he);
@@ -962,7 +962,7 @@ function SharpLine(){
                   <div style={{padding:"4px 6px"}}></div>
                   {tl.entries.sort((a,b)=>b.ovOd-a.ovOd).map((e,ei)=>{
                     const isSh=SHARP_BOOKS.includes(e.bk);
-                    const toD=g.sportType==="hockey"||g.sportType==="baseball"?0.7:1;
+                    const toD=g.sportType==="hockey"||g.sportType==="baseball"?0.5:1;
                     const oe=calcEdge(e.ovOd,g.shToMed,toD),ue=calcEdge(e.unOd,g.shToMed,toD);
                     const best=oe>ue?"over":"under";
                     const thisE=Math.max(oe,ue);
@@ -1002,7 +1002,7 @@ function SharpLine(){
                   <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Edge</div>
                   {g.mlData.entries.sort((a,b)=>b.awOd-a.awOd).map((e,ei)=>{
                     const isSh=SHARP_BOOKS.includes(e.bk);
-                    const mlD=g.sportType==="hockey"||g.sportType==="baseball"?0.5:1;
+                    const mlD=g.sportType==="hockey"||g.sportType==="baseball"?0.35:1;
                     const ae=g.shMlAwMed?calcEdge(e.awOd,g.shMlAwMed,mlD):0;
                     const he=g.shMlHmMed?calcEdge(e.hmOd,g.shMlHmMed,mlD):0;
                     const thisE=Math.max(ae,he);
