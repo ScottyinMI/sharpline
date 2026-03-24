@@ -845,7 +845,7 @@ function SharpLine(){
                     <div style={{fontSize:10,color:T.mut,fontFamily:F.m,lineHeight:1.6}}>
                       {r.reasons.map((reason,ri)=><div key={ri}>· {reason}</div>)}
                     </div>
-                    <Btn sm pri style={{marginTop:8}} onClick={(e)=>{e.stopPropagation();trackBet({
+                    <Btn sm pri style={{marginTop:8}} onClick={(ev)=>{ev.stopPropagation();trackBet({
                       sport:SPORTS.find(s=>s.key===sport)?.label||sport,
                       game:`${g.away_team} @ ${g.home_team}`,
                       type:r.type,line:String(r.line||""),odds:r.odds,
@@ -888,7 +888,7 @@ function SharpLine(){
                         <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:he>3?T.grn:T.tx,fontWeight:he>3?700:400}}>{e.hmOd>0?"+":""}{e.hmOd}</div>
                         <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>5?T.gold:thisE>3?T.grn:thisE>1?T.mut+"99":T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
                         <div style={{padding:"3px 4px",background:ei%2?T.card2:"transparent"}}>
-                          {thisE>3&&<Btn sm pri onClick={(e)=>{e.stopPropagation();trackBet({
+                          {thisE>3&&<Btn sm pri onClick={(ev)=>{ev.stopPropagation();trackBet({
                             sport:SPORTS.find(s=>s.key===sport)?.label||sport,
                             game:`${g.away_team} @ ${g.home_team}`,
                             type:"Spread",line:`${best==="away"?e.awSp:e.hmSp}`,
@@ -929,7 +929,7 @@ function SharpLine(){
                         <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ue>3?T.grn:T.tx,fontWeight:ue>3?700:400}}>{e.unOd>0?"+":""}{e.unOd}</div>
                         <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>5?T.gold:thisE>3?T.grn:thisE>1?T.mut+"99":T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
                         <div style={{padding:"3px 4px",background:ei%2?T.card2:"transparent"}}>
-                          {thisE>3&&<Btn sm pri onClick={(e)=>{e.stopPropagation();trackBet({
+                          {thisE>3&&<Btn sm pri onClick={(ev)=>{ev.stopPropagation();trackBet({
                             sport:SPORTS.find(s=>s.key===sport)?.label||sport,
                             game:`${g.away_team} @ ${g.home_team}`,
                             type:"Total",line:`${best==="over"?"O":"U"} ${tl.total}`,
