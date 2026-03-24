@@ -644,6 +644,7 @@ function SharpLine(){
   const[clvIn,setClvIn]=useState({});
   const[manBet,setManBet]=useState(null);
   const[gView,setGView]=useState("spread");
+  const[tracked,setTracked]=useState(null); // tracks which button was just clicked
 
   const unitSz=bankroll>0?Math.round(bankroll*0.01):0;
 
@@ -716,9 +717,23 @@ function SharpLine(){
   },[games,scores,sport]);
 
   // ── Bet actions ──
-  const trackBet=async bet=>{
-    const id=await dbAdd(bet);
-    if(id)setBets(prev=>[{...bet,id},...prev]);
+  const trackBet=async(bet,btnKey)=>{
+    setTracked(btnKey||"saving");
+    try{
+      const id=await dbAdd(bet);
+      if(id){
+        setBets(prev=>[{...bet,id},...prev]);
+        setTracked("done");
+        setTimeout(()=>{setTab("tracker");setTracked(null);},600);
+      }else{
+        setTracked("error");
+        setTimeout(()=>setTracked(null),2000);
+      }
+    }catch(err){
+      console.error("trackBet error:",err);
+      setTracked("error");
+      setTimeout(()=>setTracked(null),2000);
+    }
   };
   const updateResult=async(id,result)=>{
     await dbUpdate(id,{result});
@@ -845,12 +860,14 @@ function SharpLine(){
                     <div style={{fontSize:10,color:T.mut,fontFamily:F.m,lineHeight:1.6}}>
                       {r.reasons.map((reason,ri)=><div key={ri}>· {reason}</div>)}
                     </div>
-                    <Btn sm pri style={{marginTop:8}} onClick={(ev)=>{ev.stopPropagation();trackBet({
-                      sport:SPORTS.find(s=>s.key===sport)?.label||sport,
-                      game:`${g.away_team} @ ${g.home_team}`,
-                      type:r.type,line:String(r.line||""),odds:r.odds,
-                      book:r.book,edge:r.edge,units:r.units,entryOdds:r.odds,
-                    })}}>+ Track This Bet</Btn>
+                    {(()=>{const bk=`rec-${i}-${g.id}`;return(
+                      <Btn sm pri dis={tracked===bk||tracked==="done"} style={{marginTop:8,background:tracked===bk?T.grn:tracked==="error"?T.red:T.gold}} onClick={(ev)=>{ev.stopPropagation();trackBet({
+                        sport:SPORTS.find(s=>s.key===sport)?.label||sport,
+                        game:`${g.away_team} @ ${g.home_team}`,
+                        type:r.type,line:String(r.line||""),odds:r.odds,
+                        book:r.book,edge:r.edge,units:r.units,entryOdds:r.odds,
+                      },bk)}}>{tracked===bk?"✓ Tracked":tracked==="error"?"✕ Error":"+ Track This Bet"}</Btn>
+                    )})()}
                   </div>
                 ))}
               </div>
@@ -888,14 +905,16 @@ function SharpLine(){
                         <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:he>3?T.grn:T.tx,fontWeight:he>3?700:400}}>{e.hmOd>0?"+":""}{e.hmOd}</div>
                         <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>5?T.gold:thisE>3?T.grn:thisE>1?T.mut+"99":T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
                         <div style={{padding:"3px 4px",background:ei%2?T.card2:"transparent"}}>
-                          {thisE>3&&<Btn sm pri onClick={(ev)=>{ev.stopPropagation();trackBet({
-                            sport:SPORTS.find(s=>s.key===sport)?.label||sport,
-                            game:`${g.away_team} @ ${g.home_team}`,
-                            type:"Spread",line:`${best==="away"?e.awSp:e.hmSp}`,
-                            odds:best==="away"?e.awOd:e.hmOd,book:e.book,
-                            edge:+thisE.toFixed(1),units:suggestUnits(thisE),
-                            entryOdds:best==="away"?e.awOd:e.hmOd,
-                          })}}>+</Btn>}
+                          {(()=>{const bk=`sp-${ei}-${g.id}`;return thisE>3?(
+                            <Btn sm pri dis={tracked===bk||tracked==="done"} style={{background:tracked===bk?T.grn:T.gold}} onClick={(ev)=>{ev.stopPropagation();trackBet({
+                              sport:SPORTS.find(s=>s.key===sport)?.label||sport,
+                              game:`${g.away_team} @ ${g.home_team}`,
+                              type:"Spread",line:`${best==="away"?e.awSp:e.hmSp}`,
+                              odds:best==="away"?e.awOd:e.hmOd,book:e.book,
+                              edge:+thisE.toFixed(1),units:suggestUnits(thisE),
+                              entryOdds:best==="away"?e.awOd:e.hmOd,
+                            },bk)}}>{tracked===bk?"✓":"+"}</Btn>
+                          ):null})()}
                         </div>
                       </React.Fragment>
                     );
@@ -929,14 +948,16 @@ function SharpLine(){
                         <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ue>3?T.grn:T.tx,fontWeight:ue>3?700:400}}>{e.unOd>0?"+":""}{e.unOd}</div>
                         <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>5?T.gold:thisE>3?T.grn:thisE>1?T.mut+"99":T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
                         <div style={{padding:"3px 4px",background:ei%2?T.card2:"transparent"}}>
-                          {thisE>3&&<Btn sm pri onClick={(ev)=>{ev.stopPropagation();trackBet({
-                            sport:SPORTS.find(s=>s.key===sport)?.label||sport,
-                            game:`${g.away_team} @ ${g.home_team}`,
-                            type:"Total",line:`${best==="over"?"O":"U"} ${tl.total}`,
-                            odds:best==="over"?e.ovOd:e.unOd,book:e.book,
-                            edge:+thisE.toFixed(1),units:suggestUnits(thisE),
-                            entryOdds:best==="over"?e.ovOd:e.unOd,
-                          })}}>+</Btn>}
+                          {(()=>{const bk=`to-${ei}-${g.id}`;return thisE>3?(
+                            <Btn sm pri dis={tracked===bk||tracked==="done"} style={{background:tracked===bk?T.grn:T.gold}} onClick={(ev)=>{ev.stopPropagation();trackBet({
+                              sport:SPORTS.find(s=>s.key===sport)?.label||sport,
+                              game:`${g.away_team} @ ${g.home_team}`,
+                              type:"Total",line:`${best==="over"?"O":"U"} ${tl.total}`,
+                              odds:best==="over"?e.ovOd:e.unOd,book:e.book,
+                              edge:+thisE.toFixed(1),units:suggestUnits(thisE),
+                              entryOdds:best==="over"?e.ovOd:e.unOd,
+                            },bk)}}>{tracked===bk?"✓":"+"}</Btn>
+                          ):null})()}
                         </div>
                       </React.Fragment>
                     );
