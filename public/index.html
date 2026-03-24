@@ -88,10 +88,10 @@ const a2i=a=>a<0?Math.abs(a)/(Math.abs(a)+100):100/(a+100);
 const a2d=a=>a<0?1+100/Math.abs(a):1+a/100;
 
 // Edge: pure implied-probability-point difference, hard-capped at 10%
-// This is the honest measure across all odds formats
-function calcEdge(yours,sharp){
+// damp parameter allows sport-specific dampening (0.5 for hockey/baseball)
+function calcEdge(yours,sharp,damp=1){
   const yi=a2i(yours),si=a2i(sharp);
-  return Math.min(Math.max(0,(si-yi)*100),10);
+  return Math.min(Math.max(0,(si-yi)*100),10)*damp;
 }
 
 // CLV: how much value your entry captured vs closing line
@@ -349,17 +349,12 @@ function scoreGame(game,research){
   const w={edge:.35,sharpDir:.20,juice:.15,move:.10,research:.10,half:.10};
   const s={edge:0,sharpDir:0,juice:0,move:0,research:0,half:0};
 
-  // Sport-aware edge floor — moneyline-primary sports (hockey, baseball)
-  // have naturally wider book-to-book ML variance that isn't real edge.
-  // NHL/MLB: a 3% ML "edge" is normal market spread, not an inefficiency.
-  // NFL/NBA/NCAA: spreads are the primary market, tighter and more meaningful.
+  // Sport-aware edge floor — after dampening, the thresholds still apply
   const isMlSport=game.sportType==="hockey"||game.sportType==="baseball";
-  const edgeFloor=isMlSport?3:2; // NHL/MLB need 3%+ to even register; others 2%+
+  const edgeFloor=isMlSport?2:2; // same floor now since dampening handles the sport difference
 
-  // For ML-primary sports, dampen the ML edge contribution
-  // Use spread/total edge at face value, but discount ML edge by 40%
-  const adjMlEdge=isMlSport?(game.bestMlEdge||0)*0.6:(game.bestMlEdge||0);
-  const maxE=Math.max(game.bestSpreadEdge||0,game.bestTotalEdge||0,adjMlEdge);
+  // Edges are already dampened by processGames, so use them directly
+  const maxE=Math.max(game.bestSpreadEdge||0,game.bestTotalEdge||0,game.bestMlEdge||0);
 
   if(maxE>=edgeFloor+1)s.edge=Math.min((maxE-edgeFloor)*25,100);
   else s.edge=0;
@@ -494,6 +489,12 @@ function processGames(raw,myBooks){
     const conSrc=useSh?"sharp":"market";
     const sportType=SPORTS.find(s=>s.key===g.sport_key)?.type||"";
 
+    // Sport-specific edge dampening factor
+    // NHL/MLB: puck lines and run lines have moneyline-like variance
+    // that inflates raw edge calculations. 0.5x corrects for this.
+    const spDamp=sportType==="hockey"||sportType==="baseball"?0.5:1;
+    const toDamp=sportType==="hockey"||sportType==="baseball"?0.7:1; // totals less affected
+
     // Helper: does user have this book?
     const hasBook=title=>!myBooks.length||myBooks.some(mb=>title.toLowerCase().includes(mb.toLowerCase()));
 
@@ -524,7 +525,7 @@ function processGames(raw,myBooks){
       let bAE=0,bHE=0,bAB="",bHB="",bAO=0,bHO=0;
       for(const e of entries){
         if(!hasBook(e.book))continue;
-        const ae=calcEdge(e.awOd,shSpMed),he=calcEdge(e.hmOd,shSpMed);
+        const ae=calcEdge(e.awOd,shSpMed,spDamp),he=calcEdge(e.hmOd,shSpMed,spDamp);
         if(ae>bAE){bAE=ae;bAB=e.book;bAO=e.awOd;}
         if(he>bHE){bHE=he;bHB=e.book;bHO=e.hmOd;}
       }
@@ -558,7 +559,7 @@ function processGames(raw,myBooks){
       let bOE=0,bUE=0,bOB="",bUB="",bOO=0,bUO=0;
       for(const e of entries){
         if(!hasBook(e.book))continue;
-        const oe=calcEdge(e.ovOd,shToMed),ue=calcEdge(e.unOd,shToMed);
+        const oe=calcEdge(e.ovOd,shToMed,toDamp),ue=calcEdge(e.unOd,shToMed,toDamp);
         if(oe>bOE){bOE=oe;bOB=e.book;bOO=e.ovOd;}
         if(ue>bUE){bUE=ue;bUB=e.book;bUO=e.unOd;}
       }
@@ -586,8 +587,8 @@ function processGames(raw,myBooks){
       if(!aw||!hm)continue;
       mlData.entries.push({book:bm.title,bk:bm.key,awOd:aw.price,hmOd:hm.price});
       if(!hasBook(bm.title))continue;
-      const ae=shMlAwMed?calcEdge(aw.price,shMlAwMed):0;
-      const he=shMlHmMed?calcEdge(hm.price,shMlHmMed):0;
+      const ae=shMlAwMed?calcEdge(aw.price,shMlAwMed,spDamp):0;
+      const he=shMlHmMed?calcEdge(hm.price,shMlHmMed,spDamp):0;
       if(ae>mlData.bestAwayEdge){mlData.bestAwayEdge=ae;mlData.bestAwayBook=bm.title;mlData.bestAwayOdds=aw.price;}
       if(he>mlData.bestHomeEdge){mlData.bestHomeEdge=he;mlData.bestHomeBook=bm.title;mlData.bestHomeOdds=hm.price;}
     }
@@ -626,12 +627,24 @@ function processGames(raw,myBooks){
     const bestTotalEdge=totalLines.length?Math.max(...totalLines.map(t=>Math.max(t.bestOverEdge,t.bestUnderEdge))):0;
     const bestMlEdge=Math.max(mlData.bestAwayEdge,mlData.bestHomeEdge);
 
+    // Sport-specific edge dampening
+    // NHL puck lines (-1.5/+1.5) have the same wide plus-money variance as MLs.
+    // A +250 vs +180 "spread" gap looks like 7% edge but is normal market noise.
+    // MLB run lines (-1.5/+1.5) have the same issue.
+    // These sports' spreads are just alt-expressions of the moneyline market.
+    // Dampening factor: 0.5x for hockey/baseball, 1.0x for football/basketball.
+    const edgeDamp=sportType==="hockey"||sportType==="baseball"?0.5:1;
+    const adjSpreadEdge=bestSpreadEdge*edgeDamp;
+    const adjTotalEdge=bestTotalEdge*(sportType==="hockey"||sportType==="baseball"?0.7:1); // totals less affected
+    const adjMlEdge=bestMlEdge*edgeDamp;
+
     return{
       ...g,spreadLines,totalLines,mlData,
       shSpMed,shToMed,shMlAwMed,shMlHmMed,
       conSrc,sharpN:sharpBms.length,sportType,
       juiceSig,halfPtVal,
-      bestSpreadEdge,bestTotalEdge,bestMlEdge,
+      bestSpreadEdge:adjSpreadEdge,bestTotalEdge:adjTotalEdge,bestMlEdge:adjMlEdge,
+      rawSpreadEdge:bestSpreadEdge,rawTotalEdge:bestTotalEdge,rawMlEdge:bestMlEdge,
     };
   });
 }
@@ -914,7 +927,8 @@ function SharpLine(){
                   <div style={{padding:"4px 6px"}}></div>
                   {sl.entries.sort((a,b)=>b.awOd-a.awOd).map((e,ei)=>{
                     const isSh=SHARP_BOOKS.includes(e.bk);
-                    const ae=calcEdge(e.awOd,g.shSpMed),he=calcEdge(e.hmOd,g.shSpMed);
+                    const spD=g.sportType==="hockey"||g.sportType==="baseball"?0.5:1;
+                    const ae=calcEdge(e.awOd,g.shSpMed,spD),he=calcEdge(e.hmOd,g.shSpMed,spD);
                     const best=ae>he?"away":"home";
                     const thisE=Math.max(ae,he);
                     return(
@@ -957,7 +971,8 @@ function SharpLine(){
                   <div style={{padding:"4px 6px"}}></div>
                   {tl.entries.sort((a,b)=>b.ovOd-a.ovOd).map((e,ei)=>{
                     const isSh=SHARP_BOOKS.includes(e.bk);
-                    const oe=calcEdge(e.ovOd,g.shToMed),ue=calcEdge(e.unOd,g.shToMed);
+                    const toD=g.sportType==="hockey"||g.sportType==="baseball"?0.7:1;
+                    const oe=calcEdge(e.ovOd,g.shToMed,toD),ue=calcEdge(e.unOd,g.shToMed,toD);
                     const best=oe>ue?"over":"under";
                     const thisE=Math.max(oe,ue);
                     return(
@@ -996,8 +1011,9 @@ function SharpLine(){
                   <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Edge</div>
                   {g.mlData.entries.sort((a,b)=>b.awOd-a.awOd).map((e,ei)=>{
                     const isSh=SHARP_BOOKS.includes(e.bk);
-                    const ae=g.shMlAwMed?calcEdge(e.awOd,g.shMlAwMed):0;
-                    const he=g.shMlHmMed?calcEdge(e.hmOd,g.shMlHmMed):0;
+                    const mlD=g.sportType==="hockey"||g.sportType==="baseball"?0.5:1;
+                    const ae=g.shMlAwMed?calcEdge(e.awOd,g.shMlAwMed,mlD):0;
+                    const he=g.shMlHmMed?calcEdge(e.hmOd,g.shMlHmMed,mlD):0;
                     const thisE=Math.max(ae,he);
                     return(
                       <React.Fragment key={ei}>
