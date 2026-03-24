@@ -480,14 +480,14 @@ function genRecs(game,research){
 // §9  DATA PROCESSING
 // ════════════════════════════════════════════════════════════════
 
-function processGames(raw,myBooks){
+function processGames(raw,myBooks,sportKey){
   return raw.map(g=>{
     const bms=g.bookmakers||[];
     const sharpBms=bms.filter(b=>SHARP_BOOKS.includes(b.key));
     const useSh=sharpBms.length>=MIN_SHARP;
     const conBms=useSh?sharpBms:bms;
     const conSrc=useSh?"sharp":"market";
-    const sportType=SPORTS.find(s=>s.key===g.sport_key)?.type||"";
+    const sportType=SPORTS.find(s=>s.key===(sportKey||g.sport_key))?.type||"";
 
     // Sport-specific edge dampening factor
     // NHL/MLB: puck lines and run lines have moneyline-like variance
@@ -627,24 +627,15 @@ function processGames(raw,myBooks){
     const bestTotalEdge=totalLines.length?Math.max(...totalLines.map(t=>Math.max(t.bestOverEdge,t.bestUnderEdge))):0;
     const bestMlEdge=Math.max(mlData.bestAwayEdge,mlData.bestHomeEdge);
 
-    // Sport-specific edge dampening
-    // NHL puck lines (-1.5/+1.5) have the same wide plus-money variance as MLs.
-    // A +250 vs +180 "spread" gap looks like 7% edge but is normal market noise.
-    // MLB run lines (-1.5/+1.5) have the same issue.
-    // These sports' spreads are just alt-expressions of the moneyline market.
-    // Dampening factor: 0.5x for hockey/baseball, 1.0x for football/basketball.
-    const edgeDamp=sportType==="hockey"||sportType==="baseball"?0.5:1;
-    const adjSpreadEdge=bestSpreadEdge*edgeDamp;
-    const adjTotalEdge=bestTotalEdge*(sportType==="hockey"||sportType==="baseball"?0.7:1); // totals less affected
-    const adjMlEdge=bestMlEdge*edgeDamp;
+    // Edges are already dampened by calcEdge(yours, sharp, damp) calls above.
+    // No second dampening needed.
 
     return{
       ...g,spreadLines,totalLines,mlData,
       shSpMed,shToMed,shMlAwMed,shMlHmMed,
       conSrc,sharpN:sharpBms.length,sportType,
       juiceSig,halfPtVal,
-      bestSpreadEdge:adjSpreadEdge,bestTotalEdge:adjTotalEdge,bestMlEdge:adjMlEdge,
-      rawSpreadEdge:bestSpreadEdge,rawTotalEdge:bestTotalEdge,rawMlEdge:bestMlEdge,
+      bestSpreadEdge,bestTotalEdge,bestMlEdge,
     };
   });
 }
@@ -687,7 +678,7 @@ function SharpLine(){
       const rem=res.headers.get("x-requests-remaining");
       if(rem)setCredits(+rem);
 
-      const proc=processGames(data,myBooks);
+      const proc=processGames(data,myBooks,sport);
 
       // First-seen for line movement
       setFirstSeen(prev=>{
