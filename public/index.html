@@ -91,7 +91,7 @@ const a2d=a=>a<0?1+100/Math.abs(a):1+a/100;
 // damp parameter allows sport-specific dampening (0.5 for hockey/baseball)
 function calcEdge(yours,sharp,damp=1){
   const yi=a2i(yours),si=a2i(sharp);
-  return Math.min(Math.max(0,(si-yi)*100),10)*damp;
+  return Math.min(Math.max(0,(si-yi)*100)*damp,10);
 }
 
 // CLV: how much value your entry captured vs closing line
