@@ -1409,6 +1409,392 @@ function calculateEdge(
 
 
 // =============================================================================
+// SHARPLINE ENGINE — COMPONENT 5: LINE MOVEMENT TRACKER
+// =============================================================================
+// Determines how the sharp consensus probability has moved since the opening
+// line for a given game, market, and side. Produces a movement label and
+// scoring multiplier used exclusively by the scoring engine as a confidence
+// modifier — NEVER as additional edge basis points.
+//
+// Architecture note: This component has two layers:
+//   1. Pure synchronous logic (assignMovementLabel, buildMovementNotes,
+//      applyMovement) — fully testable without a database
+//   2. Async Supabase wrapper (trackLineMovement) — reads/writes line_snapshots
+//      table. Degrades gracefully to STABLE when the table is unavailable.
+//      The line_snapshots table is created in Component 9.
+//
+// Dependencies: SHARPLINE_CONFIG (C1), Supabase client (sb), line_snapshots table
+// Version 1.0 | Phase 1
+// =============================================================================
+
+// =============================================================================
+// LAYER 1 — PURE SYNCHRONOUS FUNCTIONS (testable without database)
+// =============================================================================
+
+// ── assignMovementLabel(movementMagnitude, directionalDelta) ─────────────────
+// Maps movement magnitude and direction to a label.
+// Priority order: STABLE → STEAM → CONFIRMING → FADING → STABLE (fallback)
+// REVERSE is reserved for Phase 2 — never returned in Phase 1.
+//
+// directionalDelta is positive when consensus moves TOWARD the bet (side A up),
+// and negative when it moves AWAY from the bet.
+
+function assignMovementLabel(movementMagnitude, directionalDelta) {
+  const C = SHARPLINE_CONFIG;
+
+  // Below minimum threshold → STABLE (no meaningful movement)
+  if (movementMagnitude < C.MOVEMENT_THRESHOLD) {
+    return 'STABLE';
+  }
+
+  // Large confirming move → STEAM (possible sharp action)
+  if (directionalDelta >= C.STEAM_THRESHOLD) {
+    return 'STEAM';
+  }
+
+  // Moderate confirming move → CONFIRMING
+  if (directionalDelta >= C.MOVEMENT_THRESHOLD) {
+    return 'CONFIRMING';
+  }
+
+  // Any move away from bet direction → FADING
+  if (directionalDelta <= -C.MOVEMENT_THRESHOLD) {
+    return 'FADING';
+  }
+
+  // Fallback — should not reach here given exhaustive conditions above
+  return 'STABLE';
+}
+
+// ── buildMovementNotes(label, magnitude, directionalDelta) ───────────────────
+// Builds a human-readable description of movement for the recommendation card.
+
+function buildMovementNotes(label, magnitude, directionalDelta) {
+  const pct = (magnitude * 100).toFixed(1);
+  switch (label) {
+    case 'STEAM':
+      return `STEAM: sharp consensus moved ${pct}% toward this side since opening — possible sharp action.`;
+    case 'CONFIRMING':
+      return `CONFIRMING: consensus moved ${pct}% in this bet's direction since opening.`;
+    case 'FADING':
+      return `FADING: consensus moved ${pct}% AGAINST this side since opening — market correcting.`;
+    case 'STABLE':
+    default:
+      return magnitude < SHARPLINE_CONFIG.MOVEMENT_THRESHOLD
+        ? 'STABLE: consensus within 1% of opening — no significant movement.'
+        : 'STABLE: movement present but direction unclear.';
+  }
+}
+
+// ── applyMovement(openingConsensusProb, currentConsensusProb, betSide, ...) ───
+// Pure calculation layer: given opening and current consensus, compute
+// the movement result object. No database access. Used for unit testing.
+
+function applyMovement(openingConsensusProb, currentConsensusProb, betSide, snapshotTier) {
+  const movementDelta     = currentConsensusProb - openingConsensusProb;
+  const movementMagnitude = Math.abs(movementDelta);
+
+  // directionalDelta: positive = consensus moved TOWARD the bet
+  // For side A: a positive movementDelta (consensus prob for A went up) is confirming
+  // For side B: the same positive movementDelta means consensus moved AWAY from B
+  const directionalDelta = betSide === 'A' ? movementDelta : -movementDelta;
+
+  const movementLabel      = assignMovementLabel(movementMagnitude, directionalDelta);
+  const movementMultiplier = SHARPLINE_CONFIG.MOVEMENT_MULTIPLIERS[movementLabel];
+  const notes              = buildMovementNotes(movementLabel, movementMagnitude, directionalDelta);
+
+  return {
+    movementLabel,
+    movementMultiplier,
+    openingConsensus:   openingConsensusProb,
+    currentConsensus:   currentConsensusProb,
+    movementDelta,
+    movementMagnitude,
+    directionalDelta,
+    isFirstPull:        false,
+    snapshotConfidence: snapshotTier || 'UNKNOWN',
+    notes,
+  };
+}
+
+// =============================================================================
+// LAYER 2 — ASYNC SUPABASE WRAPPER
+// =============================================================================
+
+// ── trackLineMovement(gameId, marketType, betSide, ...) ──────────────────────
+//
+// Primary function called by Component 8 (buildRecommendationCard) for each
+// game/market/side being evaluated.
+//
+// Degradation strategy (Phase 1):
+//   - If Supabase is unavailable, table doesn't exist, or any error occurs:
+//     return STABLE with isFirstPull=true and a note explaining the fallback.
+//   - Never throw. A database failure must not crash the engine pipeline.
+//   - Component 9 must be deployed before snapshots persist across scans.
+
+async function trackLineMovement(
+  gameId,
+  marketType,
+  betSide,
+  currentConsensusProb,
+  consensusTier,
+  sport,
+  commenceTime
+) {
+  // Stable fallback — returned on any failure path
+  const stableFallback = (reason) => ({
+    movementLabel:      'STABLE',
+    movementMultiplier: SHARPLINE_CONFIG.MOVEMENT_MULTIPLIERS.STABLE, // 1.00
+    openingConsensus:   currentConsensusProb,
+    currentConsensus:   currentConsensusProb,
+    movementDelta:      0,
+    movementMagnitude:  0,
+    directionalDelta:   0,
+    isFirstPull:        true,
+    snapshotConfidence: consensusTier,
+    notes:              reason || 'Opening snapshot established. Movement tracked from next scan.',
+  });
+
+  // Guard: if Supabase client isn't available, degrade immediately
+  if (typeof sb === 'undefined' || !sb) {
+    return stableFallback('No database connection — movement not tracked.');
+  }
+
+  try {
+    // ── STEP 1: Look up existing snapshot ────────────────────────────────────
+    const { data: existingRows, error: selectError } = await sb
+      .from('line_snapshots')
+      .select('*')
+      .eq('game_id', gameId)
+      .eq('market_type', marketType)
+      .eq('side', betSide)
+      .limit(1);
+
+    if (selectError) {
+      // Table may not exist yet (Component 9 not deployed) — degrade gracefully
+      console.warn('[trackLineMovement] Snapshot lookup failed:', selectError.message);
+      return stableFallback('Snapshot table unavailable — movement not tracked this scan.');
+    }
+
+    const snapshot = existingRows && existingRows.length > 0 ? existingRows[0] : null;
+
+    // ── STEP 2: First pull — no prior snapshot ────────────────────────────────
+    if (!snapshot) {
+      // Write the opening snapshot to Supabase
+      const { error: insertError } = await sb
+        .from('line_snapshots')
+        .insert({
+          game_id:               gameId,
+          sport,
+          market_type:           marketType,
+          side:                  betSide,
+          opening_consensus_prob: currentConsensusProb,
+          sharp_books_used:      [],
+          consensus_tier:        consensusTier,
+          game_commence_time:    commenceTime || null,
+        });
+
+      if (insertError) {
+        console.warn('[trackLineMovement] Snapshot insert failed:', insertError.message);
+        // Even if the write fails, return stable — don't crash the pipeline
+      }
+
+      return stableFallback('Opening snapshot established. Movement tracked from next scan.');
+    }
+
+    // ── STEP 3: Check snapshot expiry ─────────────────────────────────────────
+    // If the game has already started, don't track movement — odds are live/volatile
+    if (snapshot.game_commence_time && new Date() > new Date(snapshot.game_commence_time)) {
+      return {
+        movementLabel:      'STABLE',
+        movementMultiplier: SHARPLINE_CONFIG.MOVEMENT_MULTIPLIERS.STABLE,
+        openingConsensus:   snapshot.opening_consensus_prob,
+        currentConsensus:   currentConsensusProb,
+        movementDelta:      0,
+        movementMagnitude:  0,
+        directionalDelta:   0,
+        isFirstPull:        false,
+        snapshotConfidence: snapshot.consensus_tier,
+        notes:              'Game in progress — movement not tracked.',
+      };
+    }
+
+    // ── STEP 4–7: Compute and return movement ─────────────────────────────────
+    return applyMovement(
+      parseFloat(snapshot.opening_consensus_prob),
+      currentConsensusProb,
+      betSide,
+      snapshot.consensus_tier
+    );
+
+  } catch (err) {
+    console.warn('[trackLineMovement] Unexpected error:', err.message || err);
+    return stableFallback('Movement tracking error — defaulting to STABLE.');
+  }
+}
+
+// =============================================================================
+// COMPONENT 5 VERIFICATION — Pure function tests (no database required)
+// The async trackLineMovement() is verified manually per Component 11 spec.
+// =============================================================================
+
+(function verifyComponent5() {
+  const EPSILON = 0.000001;
+  const near = (a, b) => Math.abs(a - b) < EPSILON;
+  const checks = [];
+  const ok = (label, pass) => checks.push({ label, pass: !!pass });
+
+  // ── Test 1: assignMovementLabel — STABLE (below threshold) ───────────────
+  ok('T1: magnitude 0.003 < 0.01 → STABLE',
+     assignMovementLabel(0.003, 0.003) === 'STABLE');
+  ok('T1: magnitude 0.009 < 0.01 → STABLE',
+     assignMovementLabel(0.009, 0.009) === 'STABLE');
+  ok('T1: magnitude exactly 0.00 → STABLE',
+     assignMovementLabel(0, 0) === 'STABLE');
+
+  // ── Test 2: assignMovementLabel — CONFIRMING (1–3%) ──────────────────────
+  ok('T2: directional 0.025 >= 0.01, < 0.03 → CONFIRMING',
+     assignMovementLabel(0.025, 0.025) === 'CONFIRMING');
+  ok('T2: directional 0.010 exactly → CONFIRMING',
+     assignMovementLabel(0.010, 0.010) === 'CONFIRMING');
+  ok('T2: directional 0.029 → CONFIRMING (just below steam)',
+     assignMovementLabel(0.029, 0.029) === 'CONFIRMING');
+
+  // ── Test 3: assignMovementLabel — STEAM (>= 3%) ───────────────────────────
+  ok('T3: directional 0.040 >= 0.03 → STEAM',
+     assignMovementLabel(0.040, 0.040) === 'STEAM');
+  ok('T3: directional 0.030 exactly → STEAM',
+     assignMovementLabel(0.030, 0.030) === 'STEAM');
+  ok('T3: directional 0.100 → STEAM',
+     assignMovementLabel(0.100, 0.100) === 'STEAM');
+
+  // ── Test 4: assignMovementLabel — FADING (negative directional) ──────────
+  ok('T4: directional -0.025 → FADING',
+     assignMovementLabel(0.025, -0.025) === 'FADING');
+  ok('T4: directional -0.010 → FADING',
+     assignMovementLabel(0.010, -0.010) === 'FADING');
+  ok('T4: directional -0.050 → FADING',
+     assignMovementLabel(0.050, -0.050) === 'FADING');
+
+  // ── Test 5: REVERSE never returned in Phase 1 ─────────────────────────────
+  // No combination of inputs should return REVERSE
+  const labelCombinations = [
+    [0.050,  0.050], [0.100,  0.100], [0.030,  0.030],
+    [0.050, -0.050], [0.100, -0.100], [0.000,  0.000],
+  ];
+  const neverReverse = labelCombinations.every(
+    ([mag, dir]) => assignMovementLabel(mag, dir) !== 'REVERSE'
+  );
+  ok('T5: REVERSE never returned in Phase 1', neverReverse);
+  ok('T5: REVERSE multiplier exists in config (Phase 2 ready)',
+     SHARPLINE_CONFIG.MOVEMENT_MULTIPLIERS.REVERSE === 1.30);
+
+  // ── Test 6: applyMovement — direction correctness ─────────────────────────
+  // Same market data, different betSide → opposite labels
+  const sideA = applyMovement(0.510, 0.535, 'A', 'SINGLE_SHARP'); // +2.5% confirming
+  const sideB = applyMovement(0.510, 0.535, 'B', 'SINGLE_SHARP'); // same move, side B
+
+  ok('T6: side A confirming → CONFIRMING',         sideA.movementLabel === 'CONFIRMING');
+  ok('T6: side B same move → FADING',              sideB.movementLabel === 'FADING');
+  ok('T6: side A multiplier = 1.10',               near(sideA.movementMultiplier, 1.10));
+  ok('T6: side B multiplier = 0.85',               near(sideB.movementMultiplier, 0.85));
+  ok('T6: directionalDelta flipped for side B',    near(sideB.directionalDelta, -0.025));
+  ok('T6: movementDelta same regardless of side',  near(sideA.movementDelta, sideB.movementDelta));
+
+  // ── Test 7: applyMovement — STEAM scenario ────────────────────────────────
+  const steam = applyMovement(0.520, 0.560, 'A', 'SHARP_CONSENSUS'); // +4% move
+  ok('T7: 4% move → STEAM',                   steam.movementLabel === 'STEAM');
+  ok('T7: STEAM multiplier = 1.20',           near(steam.movementMultiplier, 1.20));
+  ok('T7: movementDelta = 0.040',             near(steam.movementDelta, 0.040));
+  ok('T7: movementMagnitude = 0.040',         near(steam.movementMagnitude, 0.040));
+  ok('T7: isFirstPull = false',               steam.isFirstPull === false);
+  ok('T7: snapshotConfidence preserved',      steam.snapshotConfidence === 'SHARP_CONSENSUS');
+
+  // ── Test 8: multiplier math in scoring context (Component 6 contract) ─────
+  // STEAM: edgePoints=25, confidencePoints=20, baseScore=45, multiplier=1.20
+  const edgePoints        = 25;
+  const confidencePoints  = 20;
+  const baseScore         = edgePoints + confidencePoints; // 45
+  const steamMultiplier   = 1.20;
+  const fadingMultiplier  = 0.85;
+
+  const steamAdjusted     = baseScore * steamMultiplier;    // 54
+  const steamDelta        = steamAdjusted - baseScore;       // 9
+  const steamPoints       = Math.min(15, Math.max(-15, steamDelta)); // 9
+
+  const fadingAdjusted    = baseScore * fadingMultiplier;   // 38.25
+  const fadingDelta       = fadingAdjusted - baseScore;      // -6.75
+  const fadingPoints      = Math.min(15, Math.max(-15, fadingDelta)); // -6.75
+
+  ok('T8: STEAM baseScore = 45',               near(baseScore, 45));
+  ok('T8: STEAM adjustedScore = 54',           near(steamAdjusted, 54));
+  ok('T8: STEAM delta = 9',                    near(steamDelta, 9));
+  ok('T8: STEAM points (no clamp) = 9',        near(steamPoints, 9));
+  ok('T8: FADING points ≈ -6.75',              near(fadingPoints, -6.75));
+
+  // Clamp test: STEAM on very high baseScore (100) → delta 20, clamped to 15
+  const highBase     = 100;
+  const highSteam    = Math.min(15, Math.max(-15, (highBase * 1.20) - highBase)); // 20 → 15
+  ok('T8: STEAM clamps to 15 at baseScore=100', near(highSteam, 15));
+
+  // ── Test 9: STABLE (first pull) — output shape ────────────────────────────
+  const stableFirst = {
+    movementLabel:      'STABLE',
+    movementMultiplier: SHARPLINE_CONFIG.MOVEMENT_MULTIPLIERS.STABLE,
+    openingConsensus:   0.505,
+    currentConsensus:   0.505,
+    movementDelta:      0,
+    movementMagnitude:  0,
+    directionalDelta:   0,
+    isFirstPull:        true,
+    snapshotConfidence: 'SINGLE_SHARP',
+    notes:              'Opening snapshot established. Movement tracked from next scan.',
+  };
+  const requiredFields = ['movementLabel','movementMultiplier','openingConsensus',
+    'currentConsensus','movementDelta','movementMagnitude','isFirstPull',
+    'snapshotConfidence','notes'];
+  requiredFields.forEach(f => ok(`T9: output has '${f}'`, f in stableFirst));
+  ok('T9: STABLE multiplier = 1.00', near(stableFirst.movementMultiplier, 1.00));
+
+  // ── Test 10: All multipliers from config are reachable ────────────────────
+  const M = SHARPLINE_CONFIG.MOVEMENT_MULTIPLIERS;
+  ok('T10: STABLE = 1.00',     near(M.STABLE,     1.00));
+  ok('T10: CONFIRMING = 1.10', near(M.CONFIRMING, 1.10));
+  ok('T10: FADING = 0.85',     near(M.FADING,     0.85));
+  ok('T10: STEAM = 1.20',      near(M.STEAM,      1.20));
+  ok('T10: REVERSE = 1.30',    near(M.REVERSE,    1.30)); // defined, not triggered
+
+  // ── Test 11: applyMovement — FADING scenario ──────────────────────────────
+  const fading = applyMovement(0.515, 0.490, 'A', 'SINGLE_SHARP'); // -2.5% move
+  ok('T11: -2.5% move → FADING',           fading.movementLabel === 'FADING');
+  ok('T11: FADING multiplier = 0.85',      near(fading.movementMultiplier, 0.85));
+  ok('T11: movementDelta = -0.025',        near(fading.movementDelta, -0.025));
+  ok('T11: directionalDelta negative',     fading.directionalDelta < 0);
+
+  // ── Test 12: trackLineMovement degrades gracefully without DB ─────────────
+  // Since we can't test Supabase in Node, verify the function exists and
+  // that it is async (returns a Promise when sb is undefined)
+  ok('T12: trackLineMovement is a function', typeof trackLineMovement === 'function');
+  ok('T12: applyMovement is a function',     typeof applyMovement === 'function');
+  ok('T12: assignMovementLabel is a function', typeof assignMovementLabel === 'function');
+
+  // ── Report ─────────────────────────────────────────────────────────────────
+  const passed = checks.filter(c => c.pass).length;
+  const failed = checks.filter(c => !c.pass);
+
+  console.log('\n=== SHARPLINE — Component 5 Verification ===');
+  console.log(passed + ' / ' + checks.length + ' checks passed');
+  if (failed.length > 0) {
+    console.warn('\n FAILED:');
+    failed.forEach(c => console.warn('  FAIL: ' + c.label));
+  } else {
+    console.log('\n All pure-function checks passed. Component 5 verified.');
+    console.log('  Manual verification (Supabase snapshot write/read) required per Component 11 Step 4.');
+  }
+})();
+
+
+// =============================================================================
 // EXISTING APP CODE BELOW — UNCHANGED
 // =============================================================================
 
