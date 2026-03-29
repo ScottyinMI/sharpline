@@ -1795,6 +1795,374 @@ async function trackLineMovement(
 
 
 // =============================================================================
+// SHARPLINE ENGINE — COMPONENT 6: SCORING ENGINE
+// =============================================================================
+// Aggregation layer. Takes verified outputs from Components 3, 4, and 5
+// and combines them into a single 0–100 score. That score drives the verdict
+// and unit recommendation in Component 7.
+//
+// This component introduces no new data. Every value it uses has already been
+// calculated and validated upstream. Its job is weighting, combining, clamping.
+//
+// Dependencies: SHARPLINE_CONFIG (C1), edgeResult (C4), consensusResult (C3),
+//               movementResult (C5)
+// Version 1.0 | Phase 1
+// =============================================================================
+
+// ── scoreEngine(edgeResult, consensusResult, movementResult, marketType, sport)
+//
+// @param edgeResult      Full output from calculateEdge() (Component 4).
+//                        Must have verdict === 'EDGE_FOUND' to proceed.
+// @param consensusResult Full output from buildSharpConsensus() (Component 3).
+//                        Provides consensusConfidence and sharpBookProbs[].
+// @param movementResult  Full output from trackLineMovement() (Component 5).
+//                        Provides movementMultiplier.
+// @param marketType      'spreads' | 'totals' | 'h2h' | 'puck_line' | 'run_line'
+// @param sport           Odds API sport_key. Passed through for flag metadata.
+//
+// @returns score result object (see output contract below)
+
+function scoreEngine(edgeResult, consensusResult, movementResult, marketType, sport) {
+
+  // ── PRE-CONDITION: must have EDGE_FOUND from Component 4 ────────────────
+  // If Component 4 returned NO_PLAY for any reason (gate fired, below threshold),
+  // pass that through immediately. No scoring runs on a NO_PLAY edge result.
+  if (!edgeResult || edgeResult.verdict !== 'EDGE_FOUND') {
+    return {
+      score:             0,
+      verdict:           'NO_PLAY',
+      reason:            edgeResult ? edgeResult.reason : 'No edge result provided',
+      edgePoints:        0,
+      confidencePoints:  0,
+      movementPoints:    0,
+      keyNumberBonus:    0,
+      divergencePenalty: 0,
+      mlVariancePenalty: 0,
+      scoreTrace:        {},
+      flags:             edgeResult ? [...(edgeResult.flags || [])] : [],
+    };
+  }
+
+  // Inherit flags from Component 4 — KEY_NUMBER_VALUE may already be present
+  const flags      = [...(edgeResult.flags || [])];
+  const scoreTrace = {};
+
+  // ── STEP 1: Edge magnitude (max 40 points) ────────────────────────────────
+  // Linear scale from minThreshold (= 0 pts) to minThreshold + EDGE_CEILING (= 40 pts).
+  // Formula: ((dampenedEdge - minThreshold) / EDGE_CEILING) * 40, capped at 40.
+  // An edge exactly at threshold scores 0. An edge 7% above threshold scores 40.
+  const edgePoints = Math.min(
+    SHARPLINE_CONFIG.SCORING.EDGE_MAX_POINTS,
+    ((edgeResult.dampenedEdge - edgeResult.minThreshold) / SHARPLINE_CONFIG.SCORING.EDGE_CEILING) * 40
+  );
+  scoreTrace.afterEdge = edgePoints;
+
+  // ── STEP 2: Sharp book confidence (max 20 points) ────────────────────────
+  // consensusConfidence × 20. The confidence weight from Component 3 reflects
+  // how much we trust the sharp consensus that the edge is based on.
+  // SHARP_CONSENSUS:    1.00 × 20 = 20 pts
+  // SINGLE_SHARP:       0.70 × 20 = 14 pts
+  // MARKET_MEDIAN:      0.60 × 20 = 12 pts
+  // FULL_MARKET_MEDIAN: 0.40 × 20 =  8 pts
+  const confidencePoints = consensusResult.consensusConfidence * SHARPLINE_CONFIG.SCORING.CONFIDENCE_MAX_POINTS;
+  scoreTrace.afterConfidence = edgePoints + confidencePoints;
+
+  // ── STEP 3: Line movement modifier (±15 points) ───────────────────────────
+  // Applied to the BASE score (edge + confidence) as a multiplier.
+  // The delta is clamped to ±15 before adding to the running score.
+  // Key reason this must come BEFORE steps 4/5/6: the multiplier should scale
+  // the core signal only — not bonuses or penalties unrelated to market direction.
+  const baseScore      = edgePoints + confidencePoints;
+  const adjustedScore  = baseScore * movementResult.movementMultiplier;
+  const movementDelta  = adjustedScore - baseScore;
+  const movementPoints = Math.min(
+    SHARPLINE_CONFIG.SCORING.MOVEMENT_MAX_POINTS,
+    Math.max(-SHARPLINE_CONFIG.SCORING.MOVEMENT_MAX_POINTS, movementDelta)
+  );
+  let score = baseScore + movementPoints;
+  scoreTrace.afterMovement = score;
+
+  // ── STEP 4: Key number bonus (+5 or +10 points) ───────────────────────────
+  // Sourced from edgeResult.keyNumberBonus — set by Component 4. The scoring
+  // engine does NOT look up key numbers itself.
+  // Added AFTER movement: prevents STEAM multiplier inflating the structural bonus.
+  const keyNumberBonus = edgeResult.keyNumberBonus || 0;
+  if (edgeResult.keyNumberFlag) {
+    score += keyNumberBonus;
+    // KEY_NUMBER_VALUE flag was already added by Component 4 if it fired.
+    // Only add again if it somehow isn't present (defensive).
+    if (!flags.includes('KEY_NUMBER_VALUE')) {
+      flags.push('KEY_NUMBER_VALUE');
+    }
+  }
+  scoreTrace.afterKeyNumber = score;
+
+  // ── STEP 5: Sharp divergence penalty (−10 points) ────────────────────────
+  // Fires when 3+ primary sharp books are present AND they disagree by > 3%
+  // on the vig-removed probability. Requires sharpBookProbs[] from Component 3.
+  // Does NOT fire with fewer than 3 sharp books (we can't measure divergence
+  // with a single book or two books of different tiers).
+  let divergencePenalty = 0;
+  if (consensusResult.sharpBookProbs && consensusResult.sharpBookProbs.length >= 3) {
+    const maxProb = Math.max(...consensusResult.sharpBookProbs);
+    const minProb = Math.min(...consensusResult.sharpBookProbs);
+    const spread  = maxProb - minProb;
+    if (spread > SHARPLINE_CONFIG.SHARP_DIVERGENCE_THRESHOLD) {
+      divergencePenalty = SHARPLINE_CONFIG.SCORING.SHARP_DIVERGENCE_PENALTY; // −10
+      score += divergencePenalty;
+      flags.push('SHARP_DIVERGENCE');
+    }
+  }
+  scoreTrace.afterDivergence = score;
+
+  // ── STEP 6: ML variance penalty (−5 points) ──────────────────────────────
+  // Fires when market is moneyline (h2h) AND the available side's implied
+  // probability is below 0.35 (significant underdog, < 35% win chance).
+  // These bets have high variance — the penalty reduces confidence in the edge.
+  // Does NOT fire on spreads, totals, puck_line, or run_line.
+  let mlVariancePenalty = 0;
+  if (marketType === 'h2h' && edgeResult.availableVigRemoved < 0.35) {
+    mlVariancePenalty = SHARPLINE_CONFIG.SCORING.ML_VARIANCE_PENALTY; // −5
+    score += mlVariancePenalty;
+    flags.push('HIGH_VARIANCE_ML');
+  }
+  scoreTrace.afterMLPenalty = score;
+
+  // ── STEP 7: Clamp to 0–100 ───────────────────────────────────────────────
+  // Always executes last. Clamping earlier would distort scores — a penalty
+  // applied after a premature clamp could push a score negative.
+  score = Math.max(
+    SHARPLINE_CONFIG.SCORING.SCORE_MIN,
+    Math.min(SHARPLINE_CONFIG.SCORING.SCORE_MAX, score)
+  );
+  // Store the final integer score in the trace
+  scoreTrace.final = Math.round(score);
+
+  return {
+    score:             Math.round(score),
+    edgePoints,
+    confidencePoints,
+    movementPoints,
+    keyNumberBonus,
+    divergencePenalty,
+    mlVariancePenalty,
+    scoreTrace,
+    flags,
+  };
+}
+
+// =============================================================================
+// COMPONENT 6 VERIFICATION — 10 spec test cases with full manual score traces
+// =============================================================================
+
+(function verifyComponent6() {
+  const EPSILON = 0.5; // integer scoring — allow 0.5 tolerance for rounding
+  const near  = (a, b, eps = EPSILON) => Math.abs(a - b) <= eps;
+  const exact = (a, b) => a === b;
+  const checks = [];
+  const ok = (label, pass) => checks.push({ label, pass: !!pass });
+
+  // Helper: build minimal input objects matching real component outputs
+  const edge = (de, mt, avr, knFlag = false, knBonus = 0, flags = []) => ({
+    verdict: 'EDGE_FOUND', reason: null,
+    dampenedEdge: de, minThreshold: mt,
+    availableVigRemoved: avr,
+    keyNumberFlag: knFlag, keyNumberBonus: knBonus,
+    flags: [...flags],
+  });
+  const consensus = (conf, probs = []) => ({
+    consensusConfidence: conf, sharpBookProbs: probs,
+  });
+  const movement = (multi) => ({ movementMultiplier: multi });
+
+  // ── Test 1: Clean WATCH — NFL spread, SHARP_CONSENSUS, STABLE ────────────
+  // Spec trace: edge=9.71, conf=20, base=29.71, move=0, score≈30
+  {
+    const r = scoreEngine(
+      edge(0.042, 0.025, 0.527),
+      consensus(1.00, [0.500, 0.502, 0.498]),
+      movement(1.00), 'spreads', 'americanfootball_nfl'
+    );
+    ok('T1: score ≈ 30',              near(r.score, 30));
+    ok('T1: edgePoints ≈ 9.71',       near(r.edgePoints, 9.71, 0.1));
+    ok('T1: confidencePoints = 20',   near(r.confidencePoints, 20.0, 0.01));
+    ok('T1: movementPoints = 0',      near(r.movementPoints, 0, 0.01));
+    ok('T1: no flags added',          r.flags.length === 0);
+    ok('T1: scoreTrace has afterEdge', 'afterEdge' in r.scoreTrace);
+  }
+
+  // ── Test 2: LEAN — NBA spread, SINGLE_SHARP (0.70), CONFIRMING ───────────
+  // Spec trace: edge=11.43, conf=14, base=25.43, move≈+2.54, score≈28
+  {
+    const r = scoreEngine(
+      edge(0.050, 0.030, 0.531),
+      consensus(0.70, [0.510]),
+      movement(1.10), 'spreads', 'basketball_nba'
+    );
+    ok('T2: score ≈ 28',                        near(r.score, 28));
+    ok('T2: confidencePoints = 14 (SINGLE_SHARP)', near(r.confidencePoints, 14.0, 0.01));
+    ok('T2: movementPoints > 0 (CONFIRMING)',    r.movementPoints > 0);
+    ok('T2: movementPoints ≈ 2.54',             near(r.movementPoints, 2.54, 0.1));
+  }
+
+  // ── Test 3: STRONG BET — NFL spread, SHARP_CONSENSUS, STEAM, key number ──
+  // Spec trace: edge=31.43, conf=20, base=51.43, move≈+10.28, +key10, score≈72
+  {
+    const r = scoreEngine(
+      edge(0.080, 0.025, 0.535, true, 10, ['KEY_NUMBER_VALUE']),
+      consensus(1.00, [0.498, 0.502, 0.501]),
+      movement(1.20), 'spreads', 'americanfootball_nfl'
+    );
+    ok('T3: score ≈ 72',                        near(r.score, 72));
+    ok('T3: edgePoints ≈ 31.43',               near(r.edgePoints, 31.43, 0.1));
+    ok('T3: keyNumberBonus = 10',              exact(r.keyNumberBonus, 10));
+    ok('T3: KEY_NUMBER_VALUE in flags',        r.flags.includes('KEY_NUMBER_VALUE'));
+    ok('T3: afterKeyNumber > afterMovement',   r.scoreTrace.afterKeyNumber > r.scoreTrace.afterMovement);
+    ok('T3: no divergence (spread 0.004<0.03)', r.divergencePenalty === 0);
+  }
+
+  // ── Test 4: Sharp divergence penalty fires ─────────────────────────────────
+  // Spec trace: edge=17.14, conf=20, base=37.14, STABLE, -10 divergence, score≈27
+  {
+    const r = scoreEngine(
+      edge(0.060, 0.030, 0.530),
+      consensus(1.00, [0.480, 0.510, 0.520]),
+      movement(1.00), 'spreads', 'basketball_nba'
+    );
+    ok('T4: score ≈ 27',                        near(r.score, 27));
+    ok('T4: divergencePenalty = -10',           exact(r.divergencePenalty, -10));
+    ok('T4: SHARP_DIVERGENCE flag',             r.flags.includes('SHARP_DIVERGENCE'));
+    ok('T4: spread 0.04 > 0.03 threshold',      (0.520 - 0.480) > 0.03);
+    ok('T4: afterDivergence < afterMovement',   r.scoreTrace.afterDivergence < r.scoreTrace.afterMovement);
+  }
+
+  // ── Test 5: ML variance penalty fires ─────────────────────────────────────
+  // Spec trace: edge=2.86, conf=20, base=22.86, STABLE, ML penalty -5, score≈18
+  {
+    const r = scoreEngine(
+      edge(0.050, 0.045, 0.290),
+      consensus(1.00, [0.260, 0.258]),
+      movement(1.00), 'h2h', 'basketball_nba'
+    );
+    ok('T5: score ≈ 18',                near(r.score, 18));
+    ok('T5: mlVariancePenalty = -5',    exact(r.mlVariancePenalty, -5));
+    ok('T5: HIGH_VARIANCE_ML flag',     r.flags.includes('HIGH_VARIANCE_ML'));
+    ok('T5: availableVigRemoved 0.290 < 0.35', 0.290 < 0.35);
+    ok('T5: divergence penalty NOT fired (only 2 books)', r.divergencePenalty === 0);
+  }
+
+  // ── Test 6: FADING movement — score reduction ─────────────────────────────
+  // Spec trace: edge=20, conf=20, base=40, FADING×0.85→delta=-6, score=34
+  {
+    const r = scoreEngine(
+      edge(0.060, 0.025, 0.530),
+      consensus(1.00, [0.502, 0.500, 0.501]),
+      movement(0.85), 'spreads', 'basketball_nba'
+    );
+    ok('T6: score = 34',               exact(r.score, 34));
+    ok('T6: movementPoints ≈ -6',      near(r.movementPoints, -6, 0.1));
+    ok('T6: edgePoints = 20',          near(r.edgePoints, 20.0, 0.01));
+    ok('T6: no penalties',             r.divergencePenalty === 0 && r.mlVariancePenalty === 0);
+  }
+
+  // ── Test 7: Score clamp — cannot exceed 100 ───────────────────────────────
+  // Spec: edge=40 (capped), conf=20, base=60, REVERSE×1.30→delta=18→clamped15,
+  //       +key10, score=85 (clamped to 85)
+  {
+    const r = scoreEngine(
+      edge(0.096, 0.025, 0.535, true, 10, ['KEY_NUMBER_VALUE']),
+      consensus(1.00, [0.501, 0.502, 0.503]),
+      movement(1.30), 'spreads', 'americanfootball_nfl'
+    );
+    ok('T7: score = 85',               exact(r.score, 85));
+    ok('T7: edgePoints capped at 40',  near(r.edgePoints, 40.0, 0.01));
+    ok('T7: movementPoints = 15 (clamped)', exact(r.movementPoints, 15));
+    ok('T7: keyNumberBonus = 10',      exact(r.keyNumberBonus, 10));
+    ok('T7: score <= 100',             r.score <= 100);
+  }
+
+  // ── Test 8: Score clamp — cannot go below 0 ───────────────────────────────
+  // Spec: edge≈0.57, conf=20, base≈20.57, FADING→-3.09, divergence-10, ML-5, score≈2
+  {
+    const r = scoreEngine(
+      edge(0.026, 0.025, 0.290),
+      consensus(1.00, [0.480, 0.510, 0.525]),
+      movement(0.85), 'h2h', 'basketball_nba'
+    );
+    ok('T8: score ≈ 2 (not negative)',  r.score >= 0 && near(r.score, 2));
+    ok('T8: FADING + DIVERGENCE + ML',  r.divergencePenalty === -10 && r.mlVariancePenalty === -5);
+    ok('T8: SHARP_DIVERGENCE flag',     r.flags.includes('SHARP_DIVERGENCE'));
+    ok('T8: HIGH_VARIANCE_ML flag',     r.flags.includes('HIGH_VARIANCE_ML'));
+    ok('T8: score >= 0 (floor clamp)',  r.score >= 0);
+  }
+
+  // ── Test 9: NO_PLAY pre-condition ─────────────────────────────────────────
+  // edgeResult.verdict is NO_PLAY → return immediately, no scoring runs
+  {
+    const noPlayEdge = {
+      verdict: 'NO_PLAY', reason: 'Edge below minimum threshold',
+      dampenedEdge: 0.015, minThreshold: 0.025, flags: [],
+    };
+    const r = scoreEngine(
+      noPlayEdge,
+      consensus(1.00, [0.500, 0.502]),
+      movement(1.00), 'spreads', 'basketball_nba'
+    );
+    ok('T9: score = 0',                exact(r.score, 0));
+    ok('T9: verdict = NO_PLAY',        r.verdict === 'NO_PLAY');
+    ok('T9: reason passed through',    r.reason === 'Edge below minimum threshold');
+    ok('T9: scoreTrace empty',         Object.keys(r.scoreTrace).length === 0);
+  }
+
+  // ── Test 10: FULL_MARKET_MEDIAN — rarely reaches BET ─────────────────────
+  // 0.40 confidence × 20 = 8 pts. Even with good edge, score stays low.
+  {
+    const r = scoreEngine(
+      edge(0.060, 0.040, 0.540),
+      consensus(0.40, [0.500, 0.502, 0.498]),
+      movement(1.00), 'spreads', 'basketball_nba'
+    );
+    // edge: ((0.06-0.04)/0.07)*40 = (0.02/0.07)*40 ≈ 11.43
+    // conf: 0.40 * 20 = 8
+    // base: 19.43, STABLE, no bonuses, score ≈ 19
+    ok('T10: FULL_MARKET_MEDIAN confidence = 8 pts', near(r.confidencePoints, 8.0, 0.01));
+    ok('T10: score is low (far from BET)',           r.score < 40);
+    ok('T10: score ≈ 19',                            near(r.score, 19));
+  }
+
+  // ── Output shape validation ───────────────────────────────────────────────
+  {
+    const r = scoreEngine(
+      edge(0.060, 0.025, 0.530),
+      consensus(1.00, [0.500, 0.502, 0.501]),
+      movement(1.00), 'spreads', 'basketball_nba'
+    );
+    const required = ['score','edgePoints','confidencePoints','movementPoints',
+                      'keyNumberBonus','divergencePenalty','mlVariancePenalty',
+                      'scoreTrace','flags'];
+    required.forEach(f => ok(`Shape: has '${f}'`, f in r));
+    ok('Shape: score is integer', Number.isInteger(r.score));
+    ok('Shape: score 0-100',      r.score >= 0 && r.score <= 100);
+    ok('Shape: flags is array',   Array.isArray(r.flags));
+    ok('Shape: scoreTrace object', typeof r.scoreTrace === 'object');
+  }
+
+  // ── Report ─────────────────────────────────────────────────────────────────
+  const passed = checks.filter(c => c.pass).length;
+  const failed = checks.filter(c => !c.pass);
+
+  console.log('\n=== SHARPLINE — Component 6 Verification ===');
+  console.log(passed + ' / ' + checks.length + ' checks passed');
+  if (failed.length > 0) {
+    console.warn('\n FAILED:');
+    failed.forEach(c => console.warn('  FAIL: ' + c.label));
+  } else {
+    console.log('\n All checks passed. Component 6 verified. Proceed to Component 7.');
+  }
+})();
+
+
+// =============================================================================
 // EXISTING APP CODE BELOW — UNCHANGED
 // =============================================================================
 
