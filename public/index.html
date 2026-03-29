@@ -1034,6 +1034,23 @@ function calculateEdge(
   }
   const availableVigRemoved = vigResult.vigRemovedProb;
 
+  // ── GATE 4: Heavy run-line / puck-line exclusion ──────────────────────────
+  // In MLB and NHL, the "spreads" market is the run line / puck line (-1.5/+1.5).
+  // When one side has vigRemovedProb > 0.72, the heavy-favorite side is being
+  // evaluated. The sharp consensus at that extreme probability is unreliable
+  // (fewer sharp books offer it, fallback to market median produces noise).
+  // These are structural mismatches, not bad numbers. Exclude them entirely.
+  if (['spreads', 'run_line', 'puck_line'].includes(marketType)) {
+    const isRunPuckSport = sport.includes('baseball') || sport.includes('hockey');
+    if (isRunPuckSport && (availableVigRemoved > 0.72 || availableVigRemoved < 0.28)) {
+      return noPlay('Heavy run/puck line — extreme implied prob, not a spread edge.', {
+        availableVigRemoved,
+        dampeningFactor: SHARPLINE_CONFIG.SPREAD_DAMPENERS[sport] || 0.60,
+        minThreshold: SHARPLINE_CONFIG.MIN_EDGE_THRESHOLDS[sport]?.spreads?.sharp || 0.03,
+      });
+    }
+  }
+
   // ── STEP 2: Raw edge ──────────────────────────────────────────────────────
   // available vig-removed probability minus the sharp consensus probability.
   // Positive = available book is offering more value than the sharp price.
@@ -2893,20 +2910,26 @@ async function scanGames(gamesArray, sport, markets) {
   const cards = [];
   const marketsToScan = markets || ['spreads', 'totals', 'h2h'];
 
+  // Run all evaluations in parallel — critical for performance
+  // Sequential await was causing 14+ second scans (156 serial DB queries)
+  const tasks = [];
   for (const game of (gamesArray || [])) {
     for (const market of marketsToScan) {
-      // Evaluate both sides (A = away/over, B = home/under)
       for (const side of ['A', 'B']) {
-        try {
-          const card = await buildRecommendationCard(game, sport, side, market);
-          // Only keep WATCH and above — NO_PLAY is filtered here
-          if (card.verdict !== 'NO_PLAY') {
-            cards.push(card);
-          }
-        } catch (err) {
-          console.warn('[scanGames] Error evaluating', game.id, market, side, err.message);
-        }
+        tasks.push(
+          buildRecommendationCard(game, sport, side, market)
+            .catch(err => {
+              console.warn('[scanGames] Error:', game.id, market, side, err.message);
+              return null;
+            })
+        );
       }
+    }
+  }
+  const results = await Promise.all(tasks);
+  for (const card of results) {
+    if (card && card.verdict !== 'NO_PLAY') {
+      cards.push(card);
     }
   }
 
@@ -3275,6 +3298,10 @@ async function dbAdd(bet){
       closing_odds:null,
       clv:null,
       timestamp:new Date().toISOString(),
+      // Phase 1 CLV columns — frozen at tracking time
+      consensus_prob_at_track: bet.consensus_prob_at_track!=null ? Number(bet.consensus_prob_at_track) : null,
+      score_at_track:          bet.score_at_track!=null ? Number(bet.score_at_track) : null,
+      verdict_at_track:        bet.verdict_at_track||null,
     };
     const{data,error}=await sb.from("bets").insert(row).select().single();
     if(error)throw error;
@@ -3688,8 +3715,8 @@ function SharpLine(){
       const id=await dbAdd(bet);
       if(id){
         setBets(prev=>[{...bet,id},...prev]);
-        setTracked("done");
-        setTimeout(()=>{setTab("tracker");setTracked(null);},600);
+        setTracked(btnKey||"done");
+        setTimeout(()=>setTracked(null),3000);
       }else{
         setTracked("error");
         setTrackErr("dbAdd returned null — no ID");
@@ -3840,7 +3867,8 @@ function SharpLine(){
   // ══════════════════════════════════════════════════════════════
 
   const GameCard=({game:card,index:idx})=>{
-    const exp=expanded===card.gameId;
+    const cardKey=card.gameId+card.marketType+card.betSide;
+    const exp=expanded===cardKey;
     const time=new Date(card.commenceTime).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"});
     const day=new Date(card.commenceTime).toLocaleDateString([],{weekday:"short"});
 
@@ -3873,7 +3901,7 @@ function SharpLine(){
         borderRadius:8,marginBottom:8,overflow:"hidden"
       }}>
         {/* ── HEADER — always visible ── */}
-        <div onClick={()=>setExpanded(exp?null:card.gameId+card.marketType+card.betSide)}
+        <div onClick={()=>setExpanded(exp?null:cardKey)}
           style={{padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div style={{flex:1}}>
             {/* Verdict + units badge */}
@@ -3932,8 +3960,8 @@ function SharpLine(){
             {(()=>{
               return(
                 <Btn sm pri
-                  dis={tracked===bk||tracked==="done"}
-                  style={{background:tracked===bk?T.grn:tracked==="error"?T.red:verdictColour.badge,color:"#fff"}}
+                  dis={tracked===bk}
+                  style={{background:tracked===bk?T.grn:verdictColour.badge,color:"#fff"}}
                   onClick={(ev)=>{
                     ev.stopPropagation();
                     trackBet({
@@ -3954,7 +3982,7 @@ function SharpLine(){
                     },bk);
                   }}
                 >
-                  {tracked===bk?"✓ Tracked":tracked==="error"?"✕ Error":"+ Track This Bet"}
+                  {tracked===bk?"✓ Tracked":"+ Track This Bet"}
                 </Btn>
               );
             })()}
@@ -4010,7 +4038,7 @@ function SharpLine(){
                 {(()=>{
                   return(
                     <Btn pri
-                      dis={tracked===bk||tracked==="done"}
+                      dis={tracked===bk}
                       style={{
                         width:"100%",
                         background:tracked===bk?T.grn:tracked==="error"?T.red:verdictColour.badge,
@@ -4034,7 +4062,7 @@ function SharpLine(){
                         },bk);
                       }}
                     >
-                      {tracked===bk?"✓ Tracked":tracked==="error"?"✕ Error":"+ Track This Bet"}
+                      {tracked===bk?"✓ Tracked":"+ Track This Bet"}
                     </Btn>
                   );
                 })()}
