@@ -934,6 +934,481 @@ function buildSharpConsensus(books, betSide, market, sport) {
 
 
 // =============================================================================
+// SHARPLINE ENGINE — COMPONENT 4: EDGE CALCULATION MODULE
+// =============================================================================
+// Takes the sharp consensus output from Component 3 and the best available
+// price from the user's books, and produces a single dampened edge figure.
+// This is the core signal that drives every score and verdict downstream.
+//
+// Three early-return gates prevent false positives before any math runs.
+// Dampening is applied BEFORE the threshold check — never after.
+//
+// Dependencies: SHARPLINE_CONFIG (C1), vigRemoveSide (C2), buildSharpConsensus (C3)
+// Version 1.0 | Phase 1
+// =============================================================================
+
+// ── calculateEdge(params) ────────────────────────────────────────────────────
+//
+// @param availableBook     { key, oddsA, oddsB, totalNumber? }
+//                          Best available book price for the evaluated side.
+//                          oddsA = the side being bet (away spread, over, away ML)
+//                          oddsB = the other side
+//                          totalNumber = the total line number (totals only)
+// @param betSide           'A' | 'B'
+// @param marketType        'spreads' | 'totals' | 'h2h' | 'puck_line' | 'run_line'
+// @param sport             Odds API sport_key e.g. 'basketball_nba'
+// @param spreadNumber      The spread number at the available book (spreads only)
+//                          e.g. -3.5 (away team covering). Used for key number check.
+// @param consensusResult   Full output from buildSharpConsensus() (Component 3)
+// @param consensusTotalNum Median total number across consensus books (totals only)
+// @param consensusSpreadNum Consensus spread number used for key number half-point check
+
+function calculateEdge(
+  availableBook,
+  betSide,
+  marketType,
+  sport,
+  spreadNumber,
+  consensusResult,
+  consensusTotalNum,
+  consensusSpreadNum
+) {
+  const { consensusProb, consensusTier } = consensusResult;
+  const flags = [];
+
+  // Helper: build a NO_PLAY return with consistent shape
+  const noPlay = (reason, extra = {}) => ({
+    verdict:           'NO_PLAY',
+    reason,
+    rawEdge:           null,
+    dampenedEdge:      null,
+    dampeningFactor:   null,
+    passesThreshold:   false,
+    minThreshold:      null,
+    availableVigRemoved: null,
+    numberDiscrepancy: false,
+    keyNumberFlag:     false,
+    keyNumberBonus:    0,
+    flags,
+    ...extra,
+  });
+
+  // ── GATE 1: No consensus data ─────────────────────────────────────────────
+  // Fewer than 3 books in the market — consensus engine returned NO_DATA.
+  // Cannot calculate edge against nothing.
+  if (consensusTier === 'NO_DATA') {
+    return noPlay('No consensus data available');
+  }
+
+  // ── GATE 2: NCAAB totals deferred ────────────────────────────────────────
+  // NCAAB totals are excluded from Phase 1 evaluation entirely.
+  // Silent skip — no NUMBER_DISCREPANCY flag, no display.
+  if (sport === 'basketball_ncaab' && marketType === 'totals') {
+    flags.push('NCAAB_TOTALS_DEFERRED');
+    return noPlay('NCAAB totals deferred to Phase 2', { flags });
+  }
+
+  // ── GATE 3: Totals number discrepancy ─────────────────────────────────────
+  // If the available book's total differs from the consensus total by >= 0.5,
+  // any edge figure is an artifact of the number difference, not genuine juice edge.
+  // Must execute BEFORE vig removal — no valid probability comparison exists.
+  if (marketType === 'totals') {
+    if (
+      availableBook.totalNumber == null ||
+      consensusTotalNum == null ||
+      Math.abs(availableBook.totalNumber - consensusTotalNum) >= 0.5
+    ) {
+      flags.push('NUMBER_DISCREPANCY');
+      return noPlay('Total number mismatch', { numberDiscrepancy: true, flags });
+    }
+  }
+
+  // ── STEP 1: Vig removal on available book ─────────────────────────────────
+  // Always vig-remove. Never compare raw odds or un-removed probabilities —
+  // doing so includes the book's margin on both sides and produces false edges.
+  let vigResult;
+  try {
+    vigResult = vigRemoveSide(availableBook.oddsA, availableBook.oddsB, betSide);
+  } catch (err) {
+    return noPlay('Invalid odds on available book: ' + err.message);
+  }
+  const availableVigRemoved = vigResult.vigRemovedProb;
+
+  // ── STEP 2: Raw edge ──────────────────────────────────────────────────────
+  // available vig-removed probability minus the sharp consensus probability.
+  // Positive = available book is offering more value than the sharp price.
+  // Negative = available book is worse than sharp (no edge).
+  const rawEdge = availableVigRemoved - consensusProb;
+
+  // ── STEP 3: Dampening ─────────────────────────────────────────────────────
+  // Applied BEFORE the threshold check — never after.
+  // Spread/puck/run line: sport-specific factor from SPREAD_DAMPENERS.
+  // Moneylines (h2h): probability-band factor from ML_VARIANCE_DAMPENERS.
+  // Totals: no dampening (factor = 1.00) — juice-only edge on same number.
+  let dampeningFactor;
+
+  if (marketType === 'h2h') {
+    // ML variance dampener — band based on the AVAILABLE book's implied prob
+    const band = SHARPLINE_CONFIG.ML_VARIANCE_DAMPENERS.find(
+      b => availableVigRemoved >= b.minProb
+    );
+    dampeningFactor = band ? band.factor : 0.50; // fallback to lowest band
+  } else if (['spreads', 'puck_line', 'run_line'].includes(marketType)) {
+    // Spread dampener — sport-specific
+    dampeningFactor = SHARPLINE_CONFIG.SPREAD_DAMPENERS[sport] || 1.00;
+  } else {
+    // Totals (same-number, post-Gate 3) — no dampening
+    dampeningFactor = 1.00;
+  }
+
+  const dampenedEdge = rawEdge * dampeningFactor;
+
+  // ── STEP 4: Minimum threshold check ──────────────────────────────────────
+  // Sharp-tiered thresholds are lower than market-median thresholds.
+  // A 2.63% edge that passes the sharp threshold correctly fails market_median.
+  // For MLs: use ML_EDGE_THRESHOLDS (probability-band lookup).
+  // For spreads/totals: use MIN_EDGE_THRESHOLDS (sport + market lookup).
+  const isSharpTier = ['SHARP_CONSENSUS', 'SINGLE_SHARP'].includes(consensusTier);
+  let minThreshold;
+
+  if (marketType === 'h2h') {
+    const mlBand = SHARPLINE_CONFIG.ML_EDGE_THRESHOLDS.find(
+      b => availableVigRemoved >= b.minProb
+    );
+    minThreshold = mlBand
+      ? (isSharpTier ? mlBand.sharp : mlBand.market_median)
+      : 0.045; // fallback: highest ML threshold
+  } else {
+    const sportThresholds = SHARPLINE_CONFIG.MIN_EDGE_THRESHOLDS[sport];
+    if (!sportThresholds) {
+      return noPlay('Sport not configured: ' + sport);
+    }
+    const marketThresholds = sportThresholds[marketType];
+    if (!marketThresholds) {
+      return noPlay('Market not configured for sport: ' + marketType + '/' + sport);
+    }
+    minThreshold = isSharpTier
+      ? marketThresholds.sharp
+      : marketThresholds.market_median;
+  }
+
+  // Below threshold → NO PLAY. Return the edge figures for debugging
+  // (so the UI can optionally show "close but not there" context).
+  if (dampenedEdge < minThreshold) {
+    return {
+      verdict:           'NO_PLAY',
+      reason:            'Edge below minimum threshold',
+      rawEdge,
+      dampenedEdge,
+      dampeningFactor,
+      passesThreshold:   false,
+      minThreshold,
+      availableVigRemoved,
+      numberDiscrepancy: false,
+      keyNumberFlag:     false,
+      keyNumberBonus:    0,
+      flags,
+    };
+  }
+
+  // ── STEP 5: Key number flag ───────────────────────────────────────────────
+  // Fires only when ALL THREE conditions are met:
+  //   1. Market is spreads
+  //   2. The spread number sits on a key number for this sport
+  //   3. The available number is a half-point MORE favorable than the consensus number
+  // Does not add to rawEdge — adds directly to score in Component 6.
+  let keyNumberFlag  = false;
+  let keyNumberBonus = 0;
+
+  if (marketType === 'spreads' && spreadNumber != null && consensusSpreadNum != null) {
+    const keyConfig = SHARPLINE_CONFIG.KEY_NUMBERS[sport];
+    if (keyConfig !== null && keyConfig) {
+      // Key number check: the CONSENSUS spread number must sit on a key number.
+      // The value is in the fact that the available book is giving you a better number
+      // than the consensus on a structurally important spread value.
+      // e.g. consensus -3 (a key number), available -2.5 → you get the key number cushion.
+      const absConsensusSpread = Math.abs(consensusSpreadNum);
+      if (keyConfig.numbers.includes(absConsensusSpread)) {
+        // Half-point advantage: available number must be MORE favorable than consensus.
+        // For a negative spread (covering): available -2.5 vs consensus -3 → better (closer to 0)
+        // For a positive spread (taking pts): available +3.5 vs consensus +3 → better (further from 0)
+        // In both cases: spreadNumber > consensusSpreadNum (numerically greater)
+        const halfPointBetter = spreadNumber > consensusSpreadNum;
+        if (halfPointBetter) {
+          keyNumberFlag  = true;
+          keyNumberBonus = keyConfig.bonus;
+          flags.push('KEY_NUMBER_VALUE');
+        }
+      }
+    }
+  }
+
+  // ── STEP 6: Return EDGE_FOUND ─────────────────────────────────────────────
+  return {
+    verdict:           'EDGE_FOUND',
+    reason:            null,
+    rawEdge,
+    dampenedEdge,
+    dampeningFactor,
+    passesThreshold:   true,
+    minThreshold,
+    availableVigRemoved,
+    numberDiscrepancy: false,
+    keyNumberFlag,
+    keyNumberBonus,
+    flags,
+  };
+}
+
+// =============================================================================
+// COMPONENT 4 VERIFICATION — 10 test cases from the spec
+// =============================================================================
+
+(function verifyComponent4() {
+  const EPSILON = 0.0001;
+  const near = (a, b, eps = EPSILON) => Math.abs(a - b) < eps;
+  const checks = [];
+  const ok = (label, pass) => checks.push({ label, pass: !!pass });
+
+  // Helper: build a minimal consensus result object for tests
+  const makeConsensus = (prob, tier = 'SHARP_CONSENSUS') => ({
+    consensusProb:       prob,
+    consensusTier:       tier,
+    consensusConfidence: tier === 'SHARP_CONSENSUS' ? 1.00 : tier === 'SINGLE_SHARP' ? 0.70 : tier === 'MARKET_MEDIAN' ? 0.60 : 0.40,
+    sharpBooksUsed:      ['williamhill_us'],
+    sharpBookProbs:      [prob],
+    bookCount:           5,
+    sharpBookCount:      1,
+  });
+
+  // ── Test 1: Standard spread — EDGE_FOUND happy path ───────────────────────
+  // NBA spread, sharp consensus, edge above threshold
+  {
+    // vigRemoveSide(-105, -115, 'A'):
+    // -105 → decimal 1.9524 → raw 0.5122; -115 → decimal 1.8696 → raw 0.5349
+    // overround = 1.0471; vigRemovedA = 0.5122/1.0471 ≈ 0.4892 — wait, let me use known values
+    // Use -108/-112: vigRemovedA ≈ 0.5087
+    // -130/+110: vigRemovedA ≈ 0.543, rawEdge ≈ 4.27%, dampened ≈ 3.42% > NBA 3% threshold
+    const available = { key: 'draftkings', oddsA: -130, oddsB: +110 };
+    const consensus = makeConsensus(0.500, 'SHARP_CONSENSUS'); // sharp says 50%
+    const r = calculateEdge(available, 'A', 'spreads', 'basketball_nba', -3.5, consensus, null, -3.5);
+
+    ok('T1: verdict = EDGE_FOUND',       r.verdict === 'EDGE_FOUND');
+    ok('T1: passesThreshold = true',     r.passesThreshold === true);
+    ok('T1: dampeningFactor = 0.80',     near(r.dampeningFactor, 0.80));
+    ok('T1: rawEdge > 0',                r.rawEdge > 0);
+    ok('T1: dampenedEdge = rawEdge*0.80', near(r.dampenedEdge, r.rawEdge * 0.80));
+    ok('T1: minThreshold = 0.030',       near(r.minThreshold, 0.030));
+    ok('T1: availableVigRemoved valid',   r.availableVigRemoved > 0 && r.availableVigRemoved < 1);
+    ok('T1: keyNumberFlag = false',      r.keyNumberFlag === false);
+    ok('T1: flags array exists',         Array.isArray(r.flags));
+  }
+
+  // ── Test 2: Gate 1 — NO_DATA consensus ────────────────────────────────────
+  {
+    const available = { key: 'draftkings', oddsA: -110, oddsB: -110 };
+    const consensus = makeConsensus(null, 'NO_DATA');
+    consensus.consensusProb = null;
+    const r = calculateEdge(available, 'A', 'spreads', 'basketball_nba', -3, consensus, null, -3);
+
+    ok('T2: Gate 1 fires for NO_DATA',   r.verdict === 'NO_PLAY');
+    ok('T2: rawEdge = null',             r.rawEdge === null);
+    ok('T2: dampenedEdge = null',        r.dampenedEdge === null);
+    ok('T2: passesThreshold = false',    r.passesThreshold === false);
+  }
+
+  // ── Test 3: Gate 2 — NCAAB totals deferred ────────────────────────────────
+  {
+    const available = { key: 'draftkings', oddsA: -110, oddsB: -110, totalNumber: 150.5 };
+    const consensus = makeConsensus(0.500, 'SINGLE_SHARP');
+    const r = calculateEdge(available, 'A', 'totals', 'basketball_ncaab', null, consensus, 150.5, null);
+
+    ok('T3: Gate 2 fires for NCAAB totals', r.verdict === 'NO_PLAY');
+    ok('T3: NCAAB_TOTALS_DEFERRED flag',    r.flags.includes('NCAAB_TOTALS_DEFERRED'));
+    ok('T3: rawEdge = null',                r.rawEdge === null);
+  }
+
+  // ── Test 4: Gate 3 — Totals number discrepancy ────────────────────────────
+  {
+    const available = { key: 'betmgm', oddsA: -110, oddsB: -110, totalNumber: 227.0 };
+    const consensus = makeConsensus(0.500, 'SINGLE_SHARP');
+    const r = calculateEdge(available, 'A', 'totals', 'basketball_nba', null, consensus, 227.5, null);
+
+    ok('T4: Gate 3 fires for 0.5 discrepancy', r.verdict === 'NO_PLAY');
+    ok('T4: numberDiscrepancy = true',         r.numberDiscrepancy === true);
+    ok('T4: NUMBER_DISCREPANCY flag',          r.flags.includes('NUMBER_DISCREPANCY'));
+    ok('T4: rawEdge = null',                   r.rawEdge === null);
+    ok('T4: dampenedEdge = null',              r.dampenedEdge === null);
+  }
+
+  // ── Test 5: NHL puck line — 0.60x dampening ───────────────────────────────
+  // Raw edge ~5% × 0.60 = ~3% dampened → just above the 3.0% NHL threshold
+  {
+    // vigRemoveSide(-105, -115, 'A') → availableVigRemoved ≈ 0.523
+    // consensusProb = 0.500 → rawEdge ≈ 0.023 (2.3%)
+    // With -105/-115: need bigger edge — use -100/+100 vs consensus 0.500
+    // vigRemoveSide(+100, -105, 'A') → ≈ 0.512 available vs 0.470 consensus
+    // Let's use clear numbers: available gives ~56% after vig, consensus 50%
+    // Use -120/-100 available vs consensus 0.500: vigRemovedA of -120/+100 = ?
+    // -120 → 1.8333 → 0.5455; +100 → 2.0 → 0.5000; overround = 1.0455
+    // vigRemovedA = 0.5455/1.0455 ≈ 0.5218
+    // rawEdge = 0.5218 - 0.500 = 0.0218 (2.18%) → × 0.60 = 1.31% → below 3%
+    // Need bigger raw edge. Use -130/+110 vs consensus 0.500:
+    // -130 → 1.7692 → 0.5652; +110 → 2.10 → 0.4762; overround = 1.0414
+    // vigRemovedA = 0.5652/1.0414 ≈ 0.5427
+    // rawEdge = 0.5427 - 0.500 = 0.0427 (4.27%) → × 0.60 = 2.56% → below 3%
+    // For EDGE_FOUND on NHL: need dampenedEdge >= 0.030
+    // Need rawEdge >= 0.050 to get dampened ≥ 0.030
+    // Use -150/+120 vs consensus 0.460:
+    // -150 → 1.6667 → 0.6000; +120 → 2.20 → 0.4545; overround = 1.0545
+    // vigRemovedA = 0.6000/1.0545 ≈ 0.5690
+    // rawEdge = 0.5690 - 0.460 = 0.1090 → × 0.60 = 0.0654 → above 3% ✓
+    const available = { key: 'draftkings', oddsA: -150, oddsB: +120 };
+    const consensus = makeConsensus(0.460, 'SINGLE_SHARP');
+    const r = calculateEdge(available, 'A', 'spreads', 'icehockey_nhl', -1.5, consensus, null, -1.5);
+
+    ok('T5: NHL uses 0.60 dampening',    near(r.dampeningFactor, 0.60));
+    ok('T5: dampenedEdge = raw * 0.60',  near(r.dampenedEdge, r.rawEdge * 0.60));
+    ok('T5: minThreshold = 0.030',       near(r.minThreshold, 0.030));
+    ok('T5: EDGE_FOUND (above threshold)', r.verdict === 'EDGE_FOUND');
+  }
+
+  // ── Test 6: MLB run line — 0.60x dampening, NO PLAY (below threshold) ─────
+  {
+    // Small raw edge on MLB spread that dampens below threshold
+    // -108/-112 vs consensus 0.500 → rawEdge ≈ 0.009 × 0.60 = 0.0054 < 0.030
+    const available = { key: 'fanduel', oddsA: -108, oddsB: -112 };
+    const consensus = makeConsensus(0.500, 'SINGLE_SHARP');
+    const r = calculateEdge(available, 'A', 'spreads', 'baseball_mlb', -1.5, consensus, null, -1.5);
+
+    ok('T6: MLB uses 0.60 dampening',      near(r.dampeningFactor, 0.60));
+    ok('T6: verdict = NO_PLAY',            r.verdict === 'NO_PLAY');
+    ok('T6: dampenedEdge returned',        r.dampenedEdge !== null);
+    ok('T6: dampenedEdge < threshold',     r.dampenedEdge < r.minThreshold);
+  }
+
+  // ── Test 7: ML variance dampener — slight_underdog band ───────────────────
+  // +165 available vs consensus 0.370 — per spec test case
+  {
+    // vigRemoveSide(+165, -185, 'A'):
+    // +165 → 2.65 → 0.3774; -185 → 1.5405 → 0.6493; overround = 1.0267
+    // vigRemovedA = 0.3774/1.0267 ≈ 0.3675
+    // But consensus = 0.370, so rawEdge = 0.3675 - 0.370 = -0.0025 (negative!)
+    // That means no edge for that test case. Use a case where there IS edge:
+    // +165/-185 vs consensus 0.330: rawEdge ≈ 0.3675 - 0.330 = 0.0375
+    // Available prob 0.3675 → slight_underdog band (0.35–0.45) → factor 0.65
+    // dampenedEdge = 0.0375 * 0.65 = 0.0244 < 0.035 (ML slight_underdog sharp threshold)
+    // Still NO PLAY per spec — confirms correct
+    const available = { key: 'draftkings', oddsA: +165, oddsB: -185 };
+    const consensus = makeConsensus(0.330, 'SHARP_CONSENSUS');
+    const r = calculateEdge(available, 'A', 'h2h', 'basketball_nba', null, consensus, null, null);
+
+    // availableVigRemoved ≈ 0.367 → slight_underdog band (0.35–0.45) → 0.65x
+    ok('T7: ML variant dampener applied',      r.dampeningFactor != null);
+    ok('T7: ML dampening in 0.50–0.85 range',  r.dampeningFactor >= 0.50 && r.dampeningFactor <= 0.85);
+    ok('T7: availableVigRemoved in underdog range', r.availableVigRemoved > 0.35 && r.availableVigRemoved < 0.45);
+    ok('T7: ML threshold is higher than spread', r.minThreshold >= 0.030);
+  }
+
+  // ── Test 8: Totals same number — juice edge passes ────────────────────────
+  // Per spec Test 6: same total numbers, -108/-112 over vs consensus 0.500
+  {
+    const available = { key: 'draftkings', oddsA: -108, oddsB: -112, totalNumber: 227.5 };
+    const consensus = makeConsensus(0.500, 'SHARP_CONSENSUS');
+    const r = calculateEdge(available, 'A', 'totals', 'basketball_nba', null, consensus, 227.5, null);
+
+    ok('T8: totals gate does not fire',     r.numberDiscrepancy === false);
+    ok('T8: dampening = 1.00 on totals',    near(r.dampeningFactor, 1.00));
+    ok('T8: rawEdge = dampenedEdge',        near(r.rawEdge, r.dampenedEdge));
+    // -108 vs 0.500 consensus: vigRemovedA ≈ 0.509, edge ≈ 0.009, below 3% threshold
+    ok('T8: NO_PLAY (below NBA 3% threshold)', r.verdict === 'NO_PLAY');
+    ok('T8: dampenedEdge is returned',      r.dampenedEdge !== null);
+  }
+
+  // ── Test 9: MARKET_MEDIAN tier uses higher threshold ──────────────────────
+  // NFL spread, MARKET_MEDIAN consensus (no sharp books).
+  // 2.63% edge passes sharp threshold (2.5%) but fails market_median (4.0%)
+  {
+    // vigRemoveSide(-105, -115, 'A'):
+    // -105 → 1.9524 → 0.5122; -115 → 1.8696 → 0.5348; overround = 1.0470
+    // vigRemovedA = 0.5122/1.0470 ≈ 0.4893 — that's below 0.500, negative edge
+    // Use -105/+110 vs consensus 0.500:
+    // -105 → 0.5122; +110 → 0.4762; overround = 0.9884 — invalid (< 1)
+    // Need proper two-sided market. Use -105 available vs -115 other side:
+    // vigRemovedA of -105/-115 ≈ 0.489 < 0.500 → still negative
+    // Use the inverse: if consensus is 0.500 and we want ~2.63% edge:
+    // We need availableVigRemoved ≈ 0.526. What odds give 0.526?
+    // Try -112/-108: -112 → 0.5283; -108 → 0.5090; overround = 1.0373
+    // vigRemovedA = 0.5283/1.0373 ≈ 0.5093 → rawEdge = 0.0093 — too small
+    // Use -120/-100: vigRemovedA ≈ 0.5218 → rawEdge = 0.0218 → × 1.00 (NFL) = 0.0218
+    // Hmm, 2.18% not 2.63%. Use -125/-95:
+    // -125 → 1.80 → 0.5556; -95 not standard... use -125/+105
+    // +105 → 2.05 → 0.4878; overround = 1.0434; vigRemovedA = 0.5556/1.0434 ≈ 0.5326
+    // rawEdge = 0.5326 - 0.500 = 0.0326 (3.26%) × 1.00 (NFL) = 0.0326
+    // 3.26% > 2.5% (sharp) but < 4.0% (market_median) → NO_PLAY on MARKET_MEDIAN ✓
+    const available = { key: 'betmgm', oddsA: -125, oddsB: +105 };
+    const consensus = makeConsensus(0.500, 'MARKET_MEDIAN');
+    const r = calculateEdge(available, 'A', 'spreads', 'americanfootball_nfl', -3, consensus, null, -3);
+
+    ok('T9: MARKET_MEDIAN uses 4.0% threshold',  near(r.minThreshold, 0.040));
+    ok('T9: verdict = NO_PLAY below 4.0%',       r.verdict === 'NO_PLAY');
+    ok('T9: edge would pass 2.5% sharp bar',     r.dampenedEdge > 0.025);
+    ok('T9: edge does not pass 4.0% market bar', r.dampenedEdge < 0.040);
+  }
+
+  // ── Test 10: Key number flag fires on NFL spread ───────────────────────────
+  // Available: -2.5, consensus: -3. NFL key number (3). Half-point better.
+  // Need enough edge to pass threshold AND trigger key number bonus.
+  {
+    // For key number: spreadNumber=-2.5, consensusSpreadNum=-3
+    // -2.5 > -3 → bettor gets the spread at 2.5 instead of 3 → more favorable → flag fires
+    // Need EDGE_FOUND first: use -108/-112 vs consensus 0.470
+    // vigRemovedA of -108/-112 ≈ 0.5087; rawEdge = 0.5087 - 0.470 = 0.0387
+    // NFL dampening = 1.00; dampenedEdge = 0.0387 > 0.025 threshold → EDGE_FOUND
+    const available = { key: 'draftkings', oddsA: -108, oddsB: -112 };
+    const consensus = makeConsensus(0.470, 'SINGLE_SHARP');
+    const r = calculateEdge(available, 'A', 'spreads', 'americanfootball_nfl', -2.5, consensus, null, -3.0);
+
+    ok('T10: verdict = EDGE_FOUND',         r.verdict === 'EDGE_FOUND');
+    ok('T10: keyNumberFlag = true',         r.keyNumberFlag === true);
+    ok('T10: keyNumberBonus = 10 (NFL)',    r.keyNumberBonus === 10);
+    ok('T10: KEY_NUMBER_VALUE in flags',    r.flags.includes('KEY_NUMBER_VALUE'));
+    ok('T10: NFL dampening = 1.00',         near(r.dampeningFactor, 1.00));
+  }
+
+  // ── Output shape validation ────────────────────────────────────────────────
+  // All required fields must be present in both EDGE_FOUND and NO_PLAY results
+  {
+    const required = ['verdict','reason','rawEdge','dampenedEdge','dampeningFactor',
+                      'passesThreshold','minThreshold','availableVigRemoved',
+                      'numberDiscrepancy','keyNumberFlag','keyNumberBonus','flags'];
+
+    const edgeCase = { key: 'dk', oddsA: -108, oddsB: -112 };
+    const cons = makeConsensus(0.460, 'SINGLE_SHARP');
+    const found = calculateEdge(edgeCase, 'A', 'spreads', 'americanfootball_nfl', -3, cons, null, -3);
+    const noFound = calculateEdge({ key: 'dk', oddsA: -110, oddsB: -110 }, 'A', 'spreads', 'basketball_nba', -3, makeConsensus(null, 'NO_DATA'), null, -3);
+
+    required.forEach(f => ok(`Shape: EDGE_FOUND has '${f}'`, f in found));
+    required.forEach(f => ok(`Shape: NO_PLAY has '${f}'`, f in noFound));
+  }
+
+  // ── Report ─────────────────────────────────────────────────────────────────
+  const passed = checks.filter(c => c.pass).length;
+  const failed = checks.filter(c => !c.pass);
+
+  console.log('\n=== SHARPLINE — Component 4 Verification ===');
+  console.log(passed + ' / ' + checks.length + ' checks passed');
+
+  if (failed.length > 0) {
+    console.warn('\n FAILED:');
+    failed.forEach(c => console.warn('  FAIL: ' + c.label));
+  } else {
+    console.log('\n All checks passed. Component 4 verified. Proceed to Component 5.');
+  }
+})();
+
+
+// =============================================================================
 // EXISTING APP CODE BELOW — UNCHANGED
 // =============================================================================
 
