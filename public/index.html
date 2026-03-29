@@ -3661,54 +3661,24 @@ function SharpLine(){
       const rem=res.headers.get("x-requests-remaining");
       if(rem)setCredits(+rem);
 
-      const proc=processGames(data,myBooks,sport);
-
-      setFirstSeen(prev=>{
-        const n={...prev};
-        for(const g of proc){
-          if(!n[g.id])n[g.id]={sp:g.spreadLines[0]?.awaySpread,to:g.totalLines[0]?.total,t:Date.now()};
-        }
-        return n;
-      });
-
-      for(const g of proc){
-        const fs=firstSeen[g.id];
-        if(fs){
-          const cSp=g.spreadLines[0]?.awaySpread;
-          const cTo=g.totalLines[0]?.total;
-          if(cSp!==undefined&&fs.sp!==undefined){
-            g.movement={spreadDelta:cSp-fs.sp,totalDelta:(cTo||0)-(fs.to||0),firstSp:fs.sp,firstTo:fs.to};
-          }
-        }
-      }
-
-      setGames(proc);
-      setCache(prev=>({...prev,[sport]:{data:proc,time:Date.now()}}));
-
-      if(!scores[sport]){
-        try{
-          const sr=await fetch(`/api/research?sport=${sport}&type=scores`);
-          const sd=await sr.json();
-          if(Array.isArray(sd))setScores(prev=>({...prev,[sport]:sd}));
-        }catch(e){console.warn("Scores:",e);}
-      }
+      // ── Phase 1 Engine: run full pipeline via C8 scanGames() ──
+      // scanGames filters NO_PLAY, runs C3→C4→C5→C6→C7 per game/market/side
+      // Returns sorted card objects ready for render — no enrichment needed
+      const cards=await scanGames(data,sport,['spreads','totals','h2h']);
+      setGames(cards);
+      setCache(prev=>({...prev,[sport]:{data:cards,time:Date.now()}}));
     }catch(err){console.error("Fetch:",err);}
     setLoading(false);
-  },[sport,myBooks,firstSeen,scores]);
+  },[sport]);
 
   useEffect(()=>{
     if(cache[sport])setGames(cache[sport].data);
     else setGames([]);
   },[sport]);
 
-  const enriched=useMemo(()=>{
-    return games.map(g=>{
-      const research=analyzeResearch(g,scores[sport]||[]);
-      const score=scoreGame(g,research);
-      const recs=genRecs(g,research);
-      return{...g,research,score,recs};
-    }).sort((a,b)=>b.score.total-a.score.total);
-  },[games,scores,sport]);
+  // Phase 1: games state now holds pre-scored card objects from scanGames()
+  // enriched is a direct alias — no further computation needed
+  const enriched=games;
 
   const[trackErr,setTrackErr]=useState(null);
   const trackBet=async(bet,btnKey)=>{
@@ -3863,209 +3833,224 @@ function SharpLine(){
     <button disabled={dis} onClick={onClick} style={{padding:sm?"4px 10px":"8px 16px",borderRadius:4,border:"none",fontSize:sm?10:12,fontWeight:700,fontFamily:F.m,cursor:dis?"not-allowed":"pointer",opacity:dis?0.4:1,background:pri?T.gold:T.bdr,color:pri?"#0a0e14":T.tx,transition:"all .15s",position:"relative",zIndex:1,...s}}>{children}</button>
   );
 
-  const GameCard=({game:g,index:idx})=>{
-    const exp=expanded===g.id;
-    const bestE=Math.max(g.bestSpreadEdge,g.bestTotalEdge,g.bestMlEdge);
-    const isMlSp=g.sportType==="hockey"||g.sportType==="baseball";
-    const edgeBadgeMin=isMlSp?4:3;
-    const noPlayMax=isMlSp?3:2;
-    const time=new Date(g.commence_time).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"});
-    const res=g.research,sc=g.score,recs=g.recs;
+  // ══════════════════════════════════════════════════════════════
+  // ENGINE-DRIVEN GAME CARD (Component 10 — Phase 1 Rebuild)
+  // Renders a pre-computed recommendation card object from scanGames().
+  // ZERO inline math. All values come from the card object.
+  // ══════════════════════════════════════════════════════════════
+
+  const GameCard=({game:card,index:idx})=>{
+    const exp=expanded===card.gameId;
+    const time=new Date(card.commenceTime).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"});
+    const day=new Date(card.commenceTime).toLocaleDateString([],{weekday:"short"});
+
+    // Verdict colours — driven by card.verdict, not inline calculation
+    const verdictColour={
+      STRONG_BET:{badge:T.grn,bg:T.grnB,border:T.grn+"40"},
+      BET:        {badge:"#0d9488",bg:"#042f2e",border:"#0d948840"},
+      LEAN:       {badge:T.blu,bg:T.bluB,border:T.blu+"40"},
+      WATCH:      {badge:T.orn,bg:T.ornB,border:T.orn+"40"},
+      NO_PLAY:    {badge:T.mut,bg:T.bdr,border:T.bdr},
+    }[card.verdict]||{badge:T.mut,bg:T.bdr,border:T.bdr};
+
+    const showTrack=['LEAN','BET','STRONG_BET'].includes(card.verdict);
+    const showUnits=['LEAN','BET','STRONG_BET'].includes(card.verdict);
+
+    // Market label for display
+    const mktLabel={spreads:"Spread",totals:"Total",h2h:"ML",puck_line:"Puck Line",run_line:"Run Line"}[card.marketType]||card.marketType;
+    const sideLabel=card.betSide==='A'
+      ?`${card.awayTeam?.split(' ').pop()} ${mktLabel}`
+      :`${card.homeTeam?.split(' ').pop()} ${mktLabel}`;
+
+    const bk=`card-${card.gameId}-${card.marketType}-${card.betSide}`;
 
     return(
-      <div className="fade-up" style={{animationDelay:`${idx*40}ms`,background:T.card,border:`1px solid ${bestE>=5?T.gold+"40":T.bdr}`,borderRadius:8,marginBottom:8,overflow:"hidden"}}>
-        <div onClick={()=>setExpanded(exp?null:g.id)} style={{padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+      <div className="fade-up" style={{
+        animationDelay:`${idx*40}ms`,
+        background:T.card,
+        border:`1px solid ${bestEdge(card)>=5?T.gold+"40":verdictColour.border}`,
+        borderLeft:`3px solid ${verdictColour.badge}`,
+        borderRadius:8,marginBottom:8,overflow:"hidden"
+      }}>
+        {/* ── HEADER — always visible ── */}
+        <div onClick={()=>setExpanded(exp?null:card.gameId+card.marketType+card.betSide)}
+          style={{padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div style={{flex:1}}>
-            <div style={{fontSize:13,fontWeight:700,color:T.txB,marginBottom:3}}>{g.away_team} <span style={{color:T.mut,fontWeight:400}}>@</span> {g.home_team}</div>
-            <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
-              <span style={{fontSize:10,color:T.mut,fontFamily:F.m}}>{time}</span>
-              {sc&&<Badge bg={sc.grade==="A"?T.grnB:sc.grade==="B"?T.bluB:sc.grade==="C"?T.ornB:T.bdr} color={sc.grade==="A"?T.grn:sc.grade==="B"?T.blu:sc.grade==="C"?T.orn:T.mut}>{sc.grade}·{sc.total}</Badge>}
-              {bestE>=edgeBadgeMin&&<Badge bg={bestE>5?T.gold+"20":T.grnB} color={bestE>5?T.gold:T.grn}>EDGE {bestE.toFixed(1)}%</Badge>}
-              {recs.length>0&&<Badge bg={T.gold+"15"} color={T.gold}>⚡{recs.length}</Badge>}
-              {res&&res.factors.length>0&&<Badge bg={T.purB} color={T.pur}>📋{res.factors.length}</Badge>}
-              {g.movement&&Math.abs(g.movement.spreadDelta)>0&&<Badge bg={T.bluB} color={T.blu}>{g.movement.spreadDelta>0?"↑":"↓"}{Math.abs(g.movement.spreadDelta).toFixed(1)}</Badge>}
-              {bestE<noPlayMax&&recs.length===0&&<Badge bg={T.bdr} color={T.mut}>NO PLAY</Badge>}
+            {/* Verdict + units badge */}
+            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+              <span style={{
+                padding:"2px 8px",borderRadius:3,fontSize:10,fontWeight:800,
+                fontFamily:F.m,background:verdictColour.bg,color:verdictColour.badge,
+                letterSpacing:".04em"
+              }}>{card.verdictLabel}</span>
+              {showUnits&&<span style={{
+                padding:"2px 7px",borderRadius:3,fontSize:10,fontWeight:700,
+                fontFamily:F.m,background:T.gold+"20",color:T.gold
+              }}>{card.units}u</span>}
+              {/* Flags */}
+              {card.flags?.includes('KEY_NUMBER_VALUE')&&<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:700,fontFamily:F.m,background:T.gold+"15",color:T.gold}}>KEY #</span>}
+              {card.flags?.includes('SHARP_DIVERGENCE')&&<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:700,fontFamily:F.m,background:T.orn+"15",color:T.orn}}>DIVERGENCE</span>}
+              {card.flags?.includes('HIGH_VARIANCE_ML')&&<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:700,fontFamily:F.m,background:T.mut+"20",color:T.mut}}>HIGH VAR</span>}
+            </div>
+            {/* Matchup */}
+            <div style={{fontSize:13,fontWeight:700,color:T.txB,marginBottom:2}}>
+              {card.awayTeam} <span style={{color:T.mut,fontWeight:400}}>@</span> {card.homeTeam}
+            </div>
+            {/* Meta */}
+            <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{fontSize:10,color:T.mut,fontFamily:F.m}}>{day} {time}</span>
+              <span style={{fontSize:10,color:T.mut,fontFamily:F.m}}>·</span>
+              <span style={{fontSize:10,color:T.tx,fontFamily:F.m}}>{sideLabel}</span>
+              {card.availableOdds&&<>
+                <span style={{fontSize:10,color:T.mut,fontFamily:F.m}}>·</span>
+                <span style={{fontSize:10,color:T.gold,fontFamily:F.m,fontWeight:700}}>
+                  {card.availableOdds>0?"+":""}{card.availableOdds}
+                </span>
+                <span style={{fontSize:10,color:T.mut,fontFamily:F.m}}>@ {card.availableBookTitle||card.availableBook}</span>
+              </>}
             </div>
           </div>
-          <span style={{color:T.mut,fontSize:16,transform:exp?"rotate(180deg)":"none",transition:"transform .2s"}}>▾</span>
+          {/* Edge + movement summary */}
+          <div style={{textAlign:"right",marginLeft:8}}>
+            {card.dampenedEdge!=null&&<div style={{fontSize:11,fontWeight:700,fontFamily:F.m,color:T.grn}}>
+              {(card.dampenedEdge*100).toFixed(1)}%
+            </div>}
+            <div style={{fontSize:9,color:T.mut,fontFamily:F.m,marginTop:1}}>
+              {card.movementLabel!=='STABLE'?card.movementLabel:''}
+            </div>
+            <span style={{color:T.mut,fontSize:12,display:"block",marginTop:2,
+              transform:exp?"rotate(180deg)":"none",transition:"transform .2s"}}>▾</span>
+          </div>
         </div>
 
+        {/* ── BODY — visible for LEAN+ ── */}
+        {!exp&&showTrack&&(
+          <div style={{padding:"0 14px 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <div style={{fontSize:10,color:T.mut,fontFamily:F.m}}>
+              {card.consensusTier?.replace(/_/g,' ')} · {card.movementLabel}
+            </div>
+            {(()=>{
+              return(
+                <Btn sm pri
+                  dis={tracked===bk||tracked==="done"}
+                  style={{background:tracked===bk?T.grn:tracked==="error"?T.red:verdictColour.badge,color:"#fff"}}
+                  onClick={(ev)=>{
+                    ev.stopPropagation();
+                    trackBet({
+                      sport:SPORTS.find(s=>s.key===sport)?.label||sport,
+                      game:`${card.awayTeam} @ ${card.homeTeam}`,
+                      type:mktLabel,
+                      line:card.betSide==='A'
+                        ?(card.totalNumber?`${card.betSide==='A'?'O':'U'} ${card.totalNumber}`:card.availableOdds?.toString()||'')
+                        :(card.availableOdds?.toString()||''),
+                      odds:card.availableOdds||0,
+                      book:card.availableBookTitle||card.availableBook||'',
+                      edge:card.dampenedEdge?+(card.dampenedEdge*100).toFixed(1):0,
+                      units:card.units,
+                      entryOdds:card.availableOdds||0,
+                      consensus_prob_at_track:card.consensusProb,
+                      score_at_track:card.score,
+                      verdict_at_track:card.verdict,
+                    },bk);
+                  }}
+                >
+                  {tracked===bk?"✓ Tracked":tracked==="error"?"✕ Error":"+ Track This Bet"}
+                </Btn>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* ── EXPANDED SECTION ── */}
         {exp&&(
           <div style={{padding:"0 14px 14px",borderTop:`1px solid ${T.bdr}`}}>
-            {res&&res.factors.length>0&&(
-              <div style={{marginTop:12,marginBottom:12}}>
-                <div style={{fontSize:10,fontWeight:700,color:T.pur,fontFamily:F.m,marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>📋 Research Factors</div>
-                <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-                  {res.factors.map((f,i)=>(
-                    <div key={i} style={{padding:"5px 9px",background:f.color+"15",border:`1px solid ${f.color}30`,borderRadius:4,fontSize:10,fontFamily:F.m}}>
-                      <span style={{color:f.color,fontWeight:700}}>{f.label}</span>
-                      <span style={{color:T.mut,marginLeft:6}}>{f.detail}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* Notes */}
+            {card.notes&&<div style={{
+              marginTop:10,padding:"8px 10px",background:T.card2,borderRadius:4,
+              fontSize:10,color:T.mut,fontFamily:F.m,lineHeight:1.6
+            }}>{card.notes}</div>}
 
-            {recs.length>0&&(
-              <div style={{marginTop:8,marginBottom:12}}>
-                <div style={{fontSize:10,fontWeight:700,color:T.gold,fontFamily:F.m,marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>⚡ Sharp Calls</div>
-                {recs.map((r,i)=>(
-                  <div key={i} style={{padding:"10px 12px",background:T.gold+"08",border:`1px solid ${T.gold}25`,borderRadius:6,marginBottom:6}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                      <div>
-                        <span style={{fontSize:13,fontWeight:800,color:T.txB}}>{r.type==="Total"?`${r.side} ${r.line}`:`${r.side} ${r.line}`}</span>
-                        <span style={{fontSize:11,color:T.gold,fontFamily:F.m,marginLeft:8}}>{r.odds>0?"+":""}{r.odds}</span>
-                        <span style={{fontSize:10,color:T.mut,fontFamily:F.m,marginLeft:8}}>@ {r.book}</span>
-                      </div>
-                      <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                        <Badge bg={r.conf==="HIGH"?T.grnB:r.conf==="MEDIUM"?T.ornB:T.bdr} color={r.conf==="HIGH"?T.grn:r.conf==="MEDIUM"?T.orn:T.mut}>{r.conf}</Badge>
-                        <Badge bg={T.gold+"20"} color={T.gold}>{r.edge}% · {r.units}u</Badge>
-                      </div>
-                    </div>
-                    <div style={{fontSize:10,color:T.mut,fontFamily:F.m,lineHeight:1.6}}>
-                      {r.reasons.map((reason,ri)=><div key={ri}>· {reason}</div>)}
-                    </div>
-                    {(()=>{const bk=`rec-${i}-${g.id}`;return(
-                      <Btn sm pri dis={tracked===bk||tracked==="done"} style={{marginTop:8,background:tracked===bk?T.grn:tracked==="error"?T.red:T.gold}} onClick={(ev)=>{ev.stopPropagation();trackBet({
-                        sport:SPORTS.find(s=>s.key===sport)?.label||sport,
-                        game:`${g.away_team} @ ${g.home_team}`,
-                        type:r.type,line:String(r.line||""),odds:r.odds,
-                        book:r.book,edge:r.edge,units:r.units,entryOdds:r.odds,
-                      },bk)}}>{tracked===bk?"✓ Tracked":tracked==="error"?"✕ Error":"+ Track This Bet"}</Btn>
-                    )})()}
-                  </div>
-                ))}
+            {/* Score trace */}
+            <div style={{marginTop:10,display:"flex",gap:8,flexWrap:"wrap"}}>
+              <div style={{padding:"6px 10px",background:T.card2,borderRadius:4,fontSize:9,fontFamily:F.m}}>
+                <span style={{color:T.mut}}>Score </span>
+                <span style={{color:T.txB,fontWeight:700}}>{card.score}/100</span>
               </div>
-            )}
-
-            <div style={{display:"flex",gap:4,marginTop:8,marginBottom:8}}>
-              {["spread","total","ml"].map(v=>(
-                <span key={v} onClick={()=>setGView(v)} style={{padding:"4px 12px",borderRadius:3,fontSize:10,fontWeight:600,fontFamily:F.m,cursor:"pointer",background:gView===v?T.gold+"20":T.bdr,color:gView===v?T.gold:T.mut,textTransform:"uppercase"}}>{v==="ml"?"Moneyline":v}</span>
-              ))}
+              {card.dampenedEdge!=null&&<div style={{padding:"6px 10px",background:T.card2,borderRadius:4,fontSize:9,fontFamily:F.m}}>
+                <span style={{color:T.mut}}>Edge </span>
+                <span style={{color:T.grn,fontWeight:700}}>{(card.dampenedEdge*100).toFixed(1)}%</span>
+                {card.dampeningFactor&&card.dampeningFactor!==1&&
+                  <span style={{color:T.mut}}> ({card.dampeningFactor}x damp)</span>}
+              </div>}
+              <div style={{padding:"6px 10px",background:T.card2,borderRadius:4,fontSize:9,fontFamily:F.m}}>
+                <span style={{color:T.mut}}>Consensus </span>
+                <span style={{color:T.txB,fontWeight:700}}>{card.consensusTier?.replace(/_/g,' ')}</span>
+              </div>
+              <div style={{padding:"6px 10px",background:T.card2,borderRadius:4,fontSize:9,fontFamily:F.m}}>
+                <span style={{color:T.mut}}>Movement </span>
+                <span style={{color:card.movementLabel==='STEAM'?T.gold:card.movementLabel==='FADING'?T.red:T.tx,fontWeight:700}}>
+                  {card.movementLabel}
+                </span>
+                {card.isFirstPull&&<span style={{color:T.mut}}> (1st scan)</span>}
+              </div>
+              {card.unitsCapped&&<div style={{padding:"6px 10px",background:T.ornB,borderRadius:4,fontSize:9,fontFamily:F.m,color:T.orn}}>
+                {card.unitCapReason}
+              </div>}
             </div>
 
-            {gView==="spread"&&g.spreadLines.map((sl,si)=>(
-              <div key={si} style={{marginBottom:8}}>
-                <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:4}}>
-                  Spread: {g.away_team} {sl.awaySpread>0?"+":""}{sl.awaySpread}
-                  {g.movement&&g.movement.spreadDelta!==0&&<span style={{color:T.blu,marginLeft:6}}>(was {g.movement.firstSp>0?"+":""}{g.movement.firstSp} → {g.movement.spreadDelta>0?"↑":"↓"}{Math.abs(g.movement.spreadDelta).toFixed(1)})</span>}
-                </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto",gap:1,fontSize:10,fontFamily:F.m}}>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700}}>Book</div>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Away</div>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Home</div>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Edge</div>
-                  <div style={{padding:"4px 6px"}}></div>
-                  {sl.entries.sort((a,b)=>b.awOd-a.awOd).map((e,ei)=>{
-                    const isSh=SHARP_BOOKS.includes(e.bk);
-                    const spD=g.sportType==="hockey"||g.sportType==="baseball"?0.35:1;
-                    const ae=calcEdge(e.awOd,g.shSpMed,spD),he=calcEdge(e.hmOd,g.shSpMed,spD);
-                    const best=ae>he?"away":"home";
-                    const thisE=Math.max(ae,he);
-                    return(
-                      <React.Fragment key={ei}>
-                        <div style={{padding:"5px 6px",color:isSh?T.grn:T.tx,background:ei%2?T.card2:"transparent",borderRadius:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.book}{isSh?" ★":""}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ae>3?T.grn:T.tx,fontWeight:ae>3?700:400}}>{e.awOd>0?"+":""}{e.awOd}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:he>3?T.grn:T.tx,fontWeight:he>3?700:400}}>{e.hmOd>0?"+":""}{e.hmOd}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>5?T.gold:thisE>3?T.grn:thisE>1?T.mut+"99":T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
-                        <div style={{padding:"3px 4px",background:ei%2?T.card2:"transparent"}}>
-                          {(()=>{const bk=`sp-${ei}-${g.id}`;return thisE>3?(
-                            <Btn sm pri dis={tracked===bk||tracked==="done"} style={{background:tracked===bk?T.grn:T.gold}} onClick={(ev)=>{ev.stopPropagation();trackBet({
-                              sport:SPORTS.find(s=>s.key===sport)?.label||sport,
-                              game:`${g.away_team} @ ${g.home_team}`,
-                              type:"Spread",line:`${best==="away"?e.awSp:e.hmSp}`,
-                              odds:best==="away"?e.awOd:e.hmOd,book:e.book,
-                              edge:+thisE.toFixed(1),units:suggestUnits(thisE),
-                              entryOdds:best==="away"?e.awOd:e.hmOd,
-                            },bk)}}>{tracked===bk?"✓":"+"}</Btn>
-                          ):null})()}
-                        </div>
-                      </React.Fragment>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
+            {/* Sharp books */}
+            {card.sharpBooksUsed?.length>0&&<div style={{marginTop:8,fontSize:9,color:T.mut,fontFamily:F.m}}>
+              Sharp anchor{card.sharpBooksUsed.length>1?'s':''}: {card.sharpBooksUsed.join(', ')} ·{' '}
+              Consensus prob: {card.consensusProb?(card.consensusProb*100).toFixed(1)+'%':'—'}
+            </div>}
 
-            {gView==="total"&&g.totalLines.map((tl,ti)=>(
-              <div key={ti} style={{marginBottom:8}}>
-                <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:4}}>
-                  Total: {tl.total}
-                  {g.movement&&g.movement.totalDelta!==0&&<span style={{color:T.blu,marginLeft:6}}>(was {g.movement.firstTo} → {g.movement.totalDelta>0?"↑":"↓"}{Math.abs(g.movement.totalDelta).toFixed(1)})</span>}
-                </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto auto",gap:1,fontSize:10,fontFamily:F.m}}>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700}}>Book</div>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Over</div>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Under</div>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Edge</div>
-                  <div style={{padding:"4px 6px"}}></div>
-                  {tl.entries.sort((a,b)=>b.ovOd-a.ovOd).map((e,ei)=>{
-                    const isSh=SHARP_BOOKS.includes(e.bk);
-                    const toD=g.sportType==="hockey"||g.sportType==="baseball"?0.5:1;
-                    const oe=calcEdge(e.ovOd,g.shToMed,toD),ue=calcEdge(e.unOd,g.shToMed,toD);
-                    const best=oe>ue?"over":"under";
-                    const thisE=Math.max(oe,ue);
-                    return(
-                      <React.Fragment key={ei}>
-                        <div style={{padding:"5px 6px",color:isSh?T.grn:T.tx,background:ei%2?T.card2:"transparent"}}>{e.book}{isSh?" ★":""}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:oe>3?T.grn:T.tx,fontWeight:oe>3?700:400}}>{e.ovOd>0?"+":""}{e.ovOd}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ue>3?T.grn:T.tx,fontWeight:ue>3?700:400}}>{e.unOd>0?"+":""}{e.unOd}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>5?T.gold:thisE>3?T.grn:thisE>1?T.mut+"99":T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
-                        <div style={{padding:"3px 4px",background:ei%2?T.card2:"transparent"}}>
-                          {(()=>{const bk=`to-${ei}-${g.id}`;return thisE>3?(
-                            <Btn sm pri dis={tracked===bk||tracked==="done"} style={{background:tracked===bk?T.grn:T.gold}} onClick={(ev)=>{ev.stopPropagation();trackBet({
-                              sport:SPORTS.find(s=>s.key===sport)?.label||sport,
-                              game:`${g.away_team} @ ${g.home_team}`,
-                              type:"Total",line:`${best==="over"?"O":"U"} ${tl.total}`,
-                              odds:best==="over"?e.ovOd:e.unOd,book:e.book,
-                              edge:+thisE.toFixed(1),units:suggestUnits(thisE),
-                              entryOdds:best==="over"?e.ovOd:e.unOd,
-                            },bk)}}>{tracked===bk?"✓":"+"}</Btn>
-                          ):null})()}
-                        </div>
-                      </React.Fragment>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-
-            {gView==="ml"&&g.mlData.entries.length>0&&(
-              <div style={{marginBottom:8}}>
-                <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:4}}>Moneyline</div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto",gap:1,fontSize:10,fontFamily:F.m}}>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700}}>Book</div>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>{g.away_team.split(" ").pop()}</div>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>{g.home_team.split(" ").pop()}</div>
-                  <div style={{padding:"4px 6px",color:T.mut,fontWeight:700,textAlign:"center"}}>Edge</div>
-                  {g.mlData.entries.sort((a,b)=>b.awOd-a.awOd).map((e,ei)=>{
-                    const isSh=SHARP_BOOKS.includes(e.bk);
-                    const mlD=g.sportType==="hockey"||g.sportType==="baseball"?0.35:1;
-                    const ae=g.shMlAwMed?calcEdge(e.awOd,g.shMlAwMed,mlD):0;
-                    const he=g.shMlHmMed?calcEdge(e.hmOd,g.shMlHmMed,mlD):0;
-                    const thisE=Math.max(ae,he);
-                    return(
-                      <React.Fragment key={ei}>
-                        <div style={{padding:"5px 6px",color:isSh?T.grn:T.tx,background:ei%2?T.card2:"transparent"}}>{e.book}{isSh?" ★":""}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:ae>2?T.grn:T.tx}}>{e.awOd>0?"+":""}{e.awOd}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:he>2?T.grn:T.tx}}>{e.hmOd>0?"+":""}{e.hmOd}</div>
-                        <div style={{padding:"5px 6px",textAlign:"center",background:ei%2?T.card2:"transparent",color:thisE>3?T.gold:thisE>2?T.grn:T.mut}}>{thisE>.5?thisE.toFixed(1)+"%":"—"}</div>
-                      </React.Fragment>
-                    );
-                  })}
-                </div>
+            {/* Track button in expanded section */}
+            {showTrack&&(
+              <div style={{marginTop:12}}>
+                {(()=>{
+                  return(
+                    <Btn pri
+                      dis={tracked===bk||tracked==="done"}
+                      style={{
+                        width:"100%",
+                        background:tracked===bk?T.grn:tracked==="error"?T.red:verdictColour.badge,
+                        color:"#fff"
+                      }}
+                      onClick={(ev)=>{
+                        ev.stopPropagation();
+                        trackBet({
+                          sport:SPORTS.find(s=>s.key===sport)?.label||sport,
+                          game:`${card.awayTeam} @ ${card.homeTeam}`,
+                          type:mktLabel,
+                          line:card.totalNumber?`${card.betSide==='A'?'O':'U'} ${card.totalNumber}`:(card.availableOdds?.toString()||''),
+                          odds:card.availableOdds||0,
+                          book:card.availableBookTitle||card.availableBook||'',
+                          edge:card.dampenedEdge?+(card.dampenedEdge*100).toFixed(1):0,
+                          units:card.units,
+                          entryOdds:card.availableOdds||0,
+                          consensus_prob_at_track:card.consensusProb,
+                          score_at_track:card.score,
+                          verdict_at_track:card.verdict,
+                        },bk);
+                      }}
+                    >
+                      {tracked===bk?"✓ Tracked":tracked==="error"?"✕ Error":"+ Track This Bet"}
+                    </Btn>
+                  );
+                })()}
               </div>
             )}
-
-            <div style={{marginTop:8,padding:"6px 10px",background:T.card2,borderRadius:4,fontSize:9,fontFamily:F.m,color:T.mut}}>
-              Benchmark: {g.conSrc==="sharp"?`${g.sharpN} sharp books (Pinnacle/Circa/Bookmaker)`:"Full market median"} · Spread: {g.shSpMed>0?"+":""}{g.shSpMed} · Total: {g.shToMed>0?"+":""}{g.shToMed}
-              {g.juiceSig&&<span style={{color:T.orn}}> · Juice: {g.juiceSig.detail}</span>}
-            </div>
           </div>
         )}
       </div>
     );
   };
+
+  // Helper: best edge from card for border highlight
+  function bestEdge(card){
+    return card.dampenedEdge?card.dampenedEdge*100:0;
+  }
+
 
   const Tracker=()=>{
     const pending=bets.filter(b=>!b.result);
@@ -4299,12 +4284,12 @@ function SharpLine(){
               <Btn pri onClick={fetchOdds} dis={loading}>{loading?"Loading...":"↻ Refresh Odds"}</Btn>
               <span style={{fontSize:9,color:T.mut,fontFamily:F.m}}>
                 {cache[sport]?`Loaded ${Math.round((Date.now()-cache[sport].time)/6e4)}m ago`:"Not loaded"}
-                {games.length>0&&` · ${games.length} games`}
+                {games.length>0&&` · ${games.length} cards`}
               </span>
             </div>
 
             {enriched.length>0?(
-              enriched.map((g,i)=><GameCard key={g.id} game={g} index={i}/>)
+              enriched.map((g,i)=><GameCard key={g.gameId+g.marketType+g.betSide} game={g} index={i}/>)
             ):(
               <div style={{textAlign:"center",padding:60,color:T.mut}}>
                 <div style={{fontSize:32,marginBottom:12}}>◎</div>
