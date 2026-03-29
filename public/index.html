@@ -306,6 +306,212 @@ const SHARPLINE_CONFIG = {
 // =============================================================================
 // EXISTING APP CODE BELOW — UNCHANGED
 // =============================================================================
+
+// =============================================================================
+// SHARPLINE ENGINE — COMPONENT 2: VIG REMOVAL UTILITIES
+// =============================================================================
+// Four pure utility functions. No state. No API calls. No side effects.
+// Input: American odds. Output: vig-removed implied probabilities.
+// Method: Additive vig removal (both sides divide by total overround).
+// Vig-removed probabilities always sum to exactly 1.00.
+// Version 1.0 | Phase 1
+// =============================================================================
+
+// ── americanToDecimal(odds) ──────────────────────────────────────────────────
+// Converts American odds to decimal odds.
+// Positive odds (underdog): decimal = (odds / 100) + 1
+// Negative odds (favorite): decimal = (100 / |odds|) + 1
+// Throws if odds is 0 or not a finite number.
+
+function americanToDecimal(odds) {
+  if (!Number.isFinite(odds) || odds === 0) {
+    throw new Error('americanToDecimal: odds must be a non-zero finite number, got ' + odds);
+  }
+  return odds > 0
+    ? (odds / 100) + 1
+    : (100 / Math.abs(odds)) + 1;
+}
+
+// ── decimalToRawProb(decimal) ────────────────────────────────────────────────
+// Converts decimal odds to raw (pre-vig) implied probability.
+// Raw probs from a two-sided market sum to MORE than 1.00 — the excess is vig.
+// Throws if decimal is <= 1 (not a valid odds representation).
+
+function decimalToRawProb(decimal) {
+  if (!Number.isFinite(decimal) || decimal <= 1) {
+    throw new Error('decimalToRawProb: decimal must be > 1, got ' + decimal);
+  }
+  return 1 / decimal;
+}
+
+// ── removeVig(probA, probB) ──────────────────────────────────────────────────
+// Removes the bookmaker's margin from a two-sided market (additive method).
+// Both sides divide by the total overround.
+// Result: two vig-removed probabilities that sum to exactly 1.00.
+// Returns: { vigRemovedA, vigRemovedB, overround, vigPct }
+// Throws if either prob is not between 0 and 1 exclusive.
+
+function removeVig(probA, probB) {
+  if (!Number.isFinite(probA) || probA <= 0 || probA >= 1) {
+    throw new Error('removeVig: probA must be between 0 and 1 exclusive, got ' + probA);
+  }
+  if (!Number.isFinite(probB) || probB <= 0 || probB >= 1) {
+    throw new Error('removeVig: probB must be between 0 and 1 exclusive, got ' + probB);
+  }
+  const overround = probA + probB;
+  const vigRemovedA = probA / overround;
+  const vigRemovedB = probB / overround;
+  const vigPct = overround - 1;
+  return { vigRemovedA, vigRemovedB, overround, vigPct };
+}
+
+// ── vigRemoveSide(oddsA, oddsB, side) ───────────────────────────────────────
+// Full pipeline: American odds → decimal → raw prob → vig removal.
+// Returns vig-removed implied probability for the specified side (A or B),
+// plus the full result object so the caller never needs to run the pipeline twice.
+//
+// PRIMARY function called by Component 3 (Sharp Consensus Engine) and
+// Component 4 (Edge Calculation Module).
+//
+// Returns: {
+//   vigRemovedProb,  — vig-removed prob for the requested side
+//   vigRemovedA,     — vig-removed prob for side A
+//   vigRemovedB,     — vig-removed prob for side B
+//   overround,       — sum of raw probs (reflects book margin)
+//   vigPct,          — margin as decimal (e.g. 0.0476 = 4.76% vig)
+//   side,            — which side was requested ('A' or 'B')
+// }
+
+function vigRemoveSide(oddsA, oddsB, side) {
+  if (side !== 'A' && side !== 'B') {
+    throw new Error("vigRemoveSide: side must be 'A' or 'B', got " + side);
+  }
+  const decimalA = americanToDecimal(oddsA);
+  const decimalB = americanToDecimal(oddsB);
+  const rawProbA = decimalToRawProb(decimalA);
+  const rawProbB = decimalToRawProb(decimalB);
+  const { vigRemovedA, vigRemovedB, overround, vigPct } = removeVig(rawProbA, rawProbB);
+  const vigRemovedProb = side === 'A' ? vigRemovedA : vigRemovedB;
+  return { vigRemovedProb, vigRemovedA, vigRemovedB, overround, vigPct, side };
+}
+
+// =============================================================================
+// COMPONENT 2 VERIFICATION
+// Run this block in the browser console after page load.
+// All 40 assertions must pass before proceeding to Component 3.
+// =============================================================================
+
+(function verifyComponent2() {
+  const EPSILON = 0.000001; // tolerance for floating point comparisons
+  const near = (a, b) => Math.abs(a - b) < EPSILON;
+  const checks = [];
+  const ok = (label, pass) => checks.push({ label, pass });
+  let threw = false;
+
+  // ── americanToDecimal ──────────────────────────────────────────────────────
+  ok('a2d(-110) ≈ 1.909091', near(americanToDecimal(-110), 1.909091));
+  ok('a2d(-120) ≈ 1.833333', near(americanToDecimal(-120), 1.833333));
+  ok('a2d(-180) ≈ 1.555556', near(americanToDecimal(-180), 1.555556));
+  ok('a2d(-300) ≈ 1.333333', near(americanToDecimal(-300), 1.333333));
+  ok('a2d(-350) ≈ 1.285714', near(americanToDecimal(-350), 1.285714));
+  ok('a2d(+100) = 2.000000', near(americanToDecimal(+100), 2.000000));
+  ok('a2d(+110) ≈ 2.100000', near(americanToDecimal(+110), 2.100000));
+  ok('a2d(+160) ≈ 2.600000', near(americanToDecimal(+160), 2.600000));
+  ok('a2d(+200) = 3.000000', near(americanToDecimal(+200), 3.000000));
+  ok('a2d(+250) ≈ 3.500000', near(americanToDecimal(+250), 3.500000));
+
+  // throws on 0
+  threw = false;
+  try { americanToDecimal(0); } catch(e) { threw = true; }
+  ok('a2d(0) throws', threw);
+
+  // ── decimalToRawProb ───────────────────────────────────────────────────────
+  ok('d2p(2.000) = 0.500000', near(decimalToRawProb(2.000), 0.500000));
+  ok('d2p(1.909) ≈ 0.523810', near(decimalToRawProb(1.909091), 0.523810));
+  ok('d2p(2.600) ≈ 0.384615', near(decimalToRawProb(2.600), 0.384615));
+
+  // throws on <= 1
+  threw = false;
+  try { decimalToRawProb(1.0); } catch(e) { threw = true; }
+  ok('d2p(1.0) throws', threw);
+
+  threw = false;
+  try { decimalToRawProb(0.5); } catch(e) { threw = true; }
+  ok('d2p(0.5) throws', threw);
+
+  // ── removeVig sum-to-1 stress tests ────────────────────────────────────────
+  const markets = [
+    [-105, -115], [-130, +110], [-200, +170], [-300, +250],
+    [-115, -105], [+140, -160], [-108, -112], [-350, +290],
+    [+200, -240], [-145, +125],
+  ];
+  for (const [a, b] of markets) {
+    const dA = americanToDecimal(a);
+    const dB = americanToDecimal(b);
+    const pA = decimalToRawProb(dA);
+    const pB = decimalToRawProb(dB);
+    const { vigRemovedA, vigRemovedB } = removeVig(pA, pB);
+    const sum = vigRemovedA + vigRemovedB;
+    ok(`removeVig(${a}/${b}) sums to 1.000000`, near(sum, 1.0));
+  }
+
+  // ── Required test cases from Phase 1 spec ─────────────────────────────────
+
+  // Case 1: -110/-110 → both sides = 50.0000%
+  const c1 = vigRemoveSide(-110, -110, 'A');
+  ok('Case 1: -110/-110 sideA ≈ 0.500000', near(c1.vigRemovedA, 0.500000));
+  ok('Case 1: -110/-110 sideB ≈ 0.500000', near(c1.vigRemovedB, 0.500000));
+  ok('Case 1: sum = 1.000000', near(c1.vigRemovedA + c1.vigRemovedB, 1.0));
+
+  // Case 2: -130/+110
+  const c2A = vigRemoveSide(-130, +110, 'A'); // favorite side
+  const c2B = vigRemoveSide(-130, +110, 'B'); // underdog side
+  ok('Case 2: -130/+110 favorite > 0.50', c2A.vigRemovedA > 0.50);
+  ok('Case 2: -130/+110 underdog < 0.50', c2A.vigRemovedB < 0.50);
+  ok('Case 2: sum = 1.000000', near(c2A.vigRemovedA + c2A.vigRemovedB, 1.0));
+  ok('Case 2: B side returns correct prob', near(c2B.vigRemovedProb, c2A.vigRemovedB));
+
+  // Case 3: +160/-180 (underdog/favorite)
+  const c3 = vigRemoveSide(+160, -180, 'A');
+  ok('Case 3: +160/-180 sideA (underdog) < 0.50', c3.vigRemovedA < 0.50);
+  ok('Case 3: +160/-180 sideB (favorite) > 0.50', c3.vigRemovedB > 0.50);
+  ok('Case 3: sum = 1.000000', near(c3.vigRemovedA + c3.vigRemovedB, 1.0));
+
+  // ── Error handling ─────────────────────────────────────────────────────────
+
+  // vigRemoveSide throws on invalid side
+  threw = false;
+  try { vigRemoveSide(-110, -110, 'C'); } catch(e) { threw = true; }
+  ok("vigRemoveSide side='C' throws", threw);
+
+  // removeVig does NOT throw on equal probs (0.6/0.6 overround = 1.2, valid)
+  threw = false;
+  try { removeVig(0.6, 0.6); } catch(e) { threw = true; }
+  ok('removeVig(0.6, 0.6) does not throw', !threw);
+
+  // ── vigRemovedProb matches requested side ──────────────────────────────────
+  const sideA = vigRemoveSide(-130, +110, 'A');
+  const sideB = vigRemoveSide(-130, +110, 'B');
+  ok('vigRemovedProb = vigRemovedA when side=A', near(sideA.vigRemovedProb, sideA.vigRemovedA));
+  ok('vigRemovedProb = vigRemovedB when side=B', near(sideB.vigRemovedProb, sideB.vigRemovedB));
+  ok('side field preserved (A)', sideA.side === 'A');
+  ok('side field preserved (B)', sideB.side === 'B');
+
+  // ── Report ─────────────────────────────────────────────────────────────────
+  const passed = checks.filter(c => c.pass).length;
+  const failed = checks.filter(c => !c.pass);
+
+  console.log('\n=== SHARPLINE — Component 2 Verification ===');
+  console.log(passed + ' / ' + checks.length + ' checks passed');
+
+  if (failed.length > 0) {
+    console.warn('\n FAILED:');
+    failed.forEach(c => console.warn('  FAIL: ' + c.label));
+  } else {
+    console.log('\n All checks passed. Component 2 verified. Proceed to Component 3.');
+  }
+})();
+
 const{useState,useEffect,useMemo,useCallback,useRef}=React;
 
 // ════════════════════════════════════════════════════════════════
