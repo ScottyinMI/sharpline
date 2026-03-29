@@ -42,15 +42,26 @@ const SHARPLINE_CONFIG = {
 
   // ── §1 SHARP_BOOKS ──────────────────────────────────────────────────────────
   SHARP_BOOKS: {
+    // PRIMARY: genuine sharp books with tightest lines and highest limits
+    // williamhill_us = Circa Sports (operates under William Hill US license)
+    // NOTE: Pinnacle ('pinnacle') and Bookmaker ('bookmaker') require a higher
+    // Odds API tier and are not currently in the feed. Add them here when available.
     PRIMARY: [
-      'pinnacle',
-      'circasports',
-      'bookmaker',
+      'williamhill_us',  // Circa Sports — confirmed sharp, available on current API tier
     ],
+    // SECONDARY: offshore/sharp-leaning books used as consensus fallback
+    // These are tighter than US retail but not primary sharp benchmarks
     SECONDARY: [
-      'draftkings',
-      'fanduel',
+      'lowvig',        // LowVig.ag — offshore, sharp-friendly limits, tight lines
+      'betanysports',  // BetAnySports — offshore, low juice, sharp-leaning
+      'betonlineag',   // BetOnline — offshore, sharp-leaning
+      'draftkings',    // US retail, sharp-leaning, high liquidity
+      'fanduel',       // US retail, sharp-leaning, high liquidity
     ],
+    // UNAVAILABLE (require higher Odds API tier — add to PRIMARY when accessible):
+    // 'pinnacle'   — primary sharp benchmark, requires commercial API agreement
+    // 'bookmaker'  — primary sharp benchmark, not on current tier
+    // 'circasports'— alternate Circa key (use 'williamhill_us' instead)
   },
 
   // ── §2 CONSENSUS_TIERS ──────────────────────────────────────────────────────
@@ -312,8 +323,8 @@ function getUserId(){
 }
 const UID=getUserId();
 
-const SHARP_BOOKS=["pinnacle","williamhill_us","bookmaker","circasports","betcris","betonlineag"];
-const SHARP_LABEL={pinnacle:"Pinnacle",williamhill_us:"Circa",bookmaker:"Bookmaker",circasports:"Circa Sports",betcris:"BetCRIS",betonlineag:"BetOnline"};
+const SHARP_BOOKS=["williamhill_us","lowvig","betanysports","betonlineag","draftkings","fanduel"];
+const SHARP_LABEL={williamhill_us:"Circa (WH)",lowvig:"LowVig",betanysports:"BetAnySports",betonlineag:"BetOnline",draftkings:"DraftKings",fanduel:"FanDuel"};
 const MIN_SHARP=2;
 
 const SPORTS=[
