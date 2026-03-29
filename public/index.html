@@ -659,6 +659,61 @@ function buildSharpConsensus(books, betSide, market, sport) {
     };
   }
 
+  // ── STEP 3b: Stale/alt-line sanity check ─────────────────────────────────
+  // If we have only ONE sharp book (SINGLE_SHARP), check that its price is
+  // consistent with the rest of the market. Circa sometimes prices a different
+  // market (alt-line, early line not updated) that diverges wildly from current
+  // consensus. If the sharp book's vig-removed prob differs from the full-market
+  // median by more than 0.25 (25 percentage points), it is a stale or alt line.
+  // Downgrade to MARKET_MEDIAN using secondary books, or FULL_MARKET_MEDIAN.
+  if (tier === 'SINGLE_SHARP' && sharpBookProbs.length === 1) {
+    const allProbs = [];
+    for (const book of books) {
+      try {
+        const r = vigRemoveSide(book.oddsA, book.oddsB, betSide);
+        allProbs.push(r.vigRemovedProb);
+      } catch(e) {}
+    }
+    if (allProbs.length >= 3) {
+      const marketMedian = _slMedian(allProbs);
+      const deviation = Math.abs(sharpBookProbs[0] - marketMedian);
+      if (deviation > 0.25) {
+        // Sharp book is stale or pricing a different market — fall back
+        console.warn('[buildSharpConsensus] SINGLE_SHARP stale line detected:',
+          'sharp=' + sharpBookProbs[0].toFixed(3),
+          'market=' + marketMedian.toFixed(3),
+          'dev=' + deviation.toFixed(3));
+        // Re-tier: use secondary books if available, otherwise full market
+        if (secondary.length >= 2) {
+          tier        = 'MARKET_MEDIAN';
+          confidence  = SHARPLINE_CONFIG.CONSENSUS_TIERS.MARKET_MEDIAN.confidence;
+          // Rebuild probs from secondary books
+          sharpBooksUsed.length = 0;
+          sharpBookProbs.length = 0;
+          for (const book of secondary) {
+            try {
+              const r = vigRemoveSide(book.oddsA, book.oddsB, betSide);
+              sharpBooksUsed.push(book.key);
+              sharpBookProbs.push(r.vigRemovedProb);
+            } catch(e) {}
+          }
+        } else {
+          tier        = 'FULL_MARKET_MEDIAN';
+          confidence  = SHARPLINE_CONFIG.CONSENSUS_TIERS.FULL_MARKET_MEDIAN.confidence;
+          sharpBooksUsed.length = 0;
+          sharpBookProbs.length = 0;
+          for (const book of books) {
+            try {
+              const r = vigRemoveSide(book.oddsA, book.oddsB, betSide);
+              sharpBooksUsed.push(book.key);
+              sharpBookProbs.push(r.vigRemovedProb);
+            } catch(e) {}
+          }
+        }
+      }
+    }
+  }
+
   // ── STEP 4: Consensus probability — median of vig-removed probs ───────────
   // Median, not mean. Prevents a single stale or anomalous book from dragging
   // the consensus. This is a permanent design decision (not a Phase 1 provisional).
@@ -1056,6 +1111,22 @@ function calculateEdge(
   // Positive = available book is offering more value than the sharp price.
   // Negative = available book is worse than sharp (no edge).
   const rawEdge = availableVigRemoved - consensusProb;
+
+  // ── GATE 5: Implausible edge — market inconsistency ───────────────────────
+  // If raw edge exceeds 20% (0.20), the available book and consensus are
+  // almost certainly pricing different markets (stale line, alt-line, data
+  // feed error, or the consensus downgraded after a stale sharp line was
+  // detected). Real sharp vs retail disagreements are 2–8%. 20%+ is noise.
+  // This gate fires AFTER dampening would reduce it, so we use raw edge.
+  if (Math.abs(rawEdge) > 0.20) {
+    return noPlay('Market inconsistency — available book and consensus diverge by ' +
+      (rawEdge * 100).toFixed(1) + '%. Likely stale line or data mismatch.', {
+      rawEdge,
+      availableVigRemoved,
+      dampeningFactor: 1.0,
+      minThreshold: null,
+    });
+  }
 
   // ── STEP 3: Dampening ─────────────────────────────────────────────────────
   // Applied BEFORE the threshold check — never after.
