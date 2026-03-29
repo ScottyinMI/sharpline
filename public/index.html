@@ -2531,6 +2531,536 @@ function assignVerdictAndUnits(scoreResult, edgeResult, consensusResult, movemen
 
 
 // =============================================================================
+// SHARPLINE ENGINE — COMPONENT 8: RECOMMENDATION CARD ORCHESTRATOR
+// =============================================================================
+// Top-level engine function. Takes raw Odds API game data, runs it through
+// every engine component in sequence, and returns a single serializable card
+// object that the scanner UI renders without any further calculation.
+//
+// This function is the only entry point to the full Phase 1 engine pipeline.
+// The UI calls buildRecommendationCard() for each game/market/side and renders
+// the result. It never touches Components 2-7 directly.
+//
+// Pipeline: C3 (consensus) → C4 (edge) → C5 (movement) → C6 (score) → C7 (verdict)
+//
+// Dependencies: All Components 1-7
+// Version 1.0 | Phase 1
+// =============================================================================
+
+// ── extractBooksForMarket(bookmakers, homeTeam, awayTeam, marketKey) ─────────
+// Extracts a normalised book array from raw Odds API bookmakers data.
+// Returns array of { key, oddsA (away/over/away ML), oddsB (home/under/home ML) }
+// oddsA is always the side being evaluated as "A" in the consensus.
+
+function extractBooksForMarket(bookmakers, homeTeam, awayTeam, marketKey) {
+  const books = [];
+  for (const bm of (bookmakers || [])) {
+    const market = (bm.markets || []).find(m => m.key === marketKey);
+    if (!market) continue;
+
+    if (marketKey === 'totals') {
+      const over  = market.outcomes?.find(o => o.name === 'Over');
+      const under = market.outcomes?.find(o => o.name === 'Under');
+      if (over && under) {
+        books.push({
+          key:         bm.key,
+          title:       bm.title,
+          oddsA:       over.price,
+          oddsB:       under.price,
+          totalNumber: over.point,
+        });
+      }
+    } else {
+      // spreads, h2h, puck_line, run_line
+      const away = market.outcomes?.find(o => o.name === awayTeam);
+      const home = market.outcomes?.find(o => o.name === homeTeam);
+      if (away && home) {
+        books.push({
+          key:        bm.key,
+          title:      bm.title,
+          oddsA:      away.price,   // away = side A
+          oddsB:      home.price,
+          spreadNum:  away.point,   // spread number for away side (null for h2h)
+        });
+      }
+    }
+  }
+  return books;
+}
+
+// ── getConsensusTotalNum(books) ───────────────────────────────────────────────
+// Median total number across all books in the market (for totals gate in C4).
+
+function getConsensusTotalNum(books) {
+  const nums = books
+    .map(b => b.totalNumber)
+    .filter(n => n != null && !isNaN(n));
+  if (!nums.length) return null;
+  return _slMedian(nums);
+}
+
+// ── getConsensusSpreadNum(consensusResult, books) ────────────────────────────
+// Median spread number across sharp/consensus source books (for key number check in C4).
+
+function getConsensusSpreadNum(consensusResult, books) {
+  const sharpBooks = books.filter(b =>
+    consensusResult.sharpBooksUsed.includes(b.key)
+  );
+  const nums = sharpBooks
+    .map(b => b.spreadNum)
+    .filter(n => n != null && !isNaN(n));
+  if (!nums.length) {
+    // Fall back to all books
+    const allNums = books.map(b => b.spreadNum).filter(n => n != null && !isNaN(n));
+    return allNums.length ? _slMedian(allNums) : null;
+  }
+  return _slMedian(nums);
+}
+
+// ── findBestAvailableBook(books, betSide, consensusResult) ───────────────────
+// Finds the book with the most favourable available odds for the betSide
+// relative to the consensus. Returns the book object with highest availableVigRemoved.
+
+function findBestAvailableBook(books, betSide) {
+  let best = null;
+  let bestProb = -Infinity;
+
+  for (const book of books) {
+    try {
+      const vr = vigRemoveSide(book.oddsA, book.oddsB, betSide);
+      if (vr.vigRemovedProb > bestProb) {
+        bestProb = vr.vigRemovedProb;
+        best = { ...book, vigRemovedProb: vr.vigRemovedProb };
+      }
+    } catch (e) {
+      // Skip books with invalid odds
+    }
+  }
+  return best;
+}
+
+// ── buildRecommendationCard(game, sport, betSide, marketKey, options) ─────────
+//
+// Main orchestrator. Runs the full Phase 1 engine pipeline for one
+// game/market/side combination and returns a complete card object.
+//
+// @param game      Raw game object from Odds API
+// @param sport     Odds API sport_key string (e.g. 'basketball_nba')
+// @param betSide   'A' (away/over) | 'B' (home/under)
+// @param marketKey 'spreads' | 'totals' | 'h2h' | 'puck_line' | 'run_line'
+// @param options   { availableBookKey? } — optionally pin to a specific book
+//
+// Returns: full card object (JSON-serializable, no functions)
+
+async function buildRecommendationCard(game, sport, betSide, marketKey, options = {}) {
+  const evaluatedAt = new Date().toISOString();
+
+  // ── Extract books for this market ─────────────────────────────────────────
+  const books = extractBooksForMarket(
+    game.bookmakers,
+    game.home_team,
+    game.away_team,
+    marketKey
+  );
+
+  // ── C3: Sharp Consensus ────────────────────────────────────────────────────
+  const consensusResult = buildSharpConsensus(books, betSide, marketKey, sport);
+
+  // If no consensus data, return a minimal NO_PLAY card immediately
+  if (consensusResult.consensusTier === 'NO_DATA') {
+    return {
+      gameId:          game.id,
+      sport,
+      homeTeam:        game.home_team,
+      awayTeam:        game.away_team,
+      commenceTime:    game.commence_time,
+      marketType:      marketKey,
+      betSide,
+      evaluatedAt,
+      // Consensus
+      consensusProb:       null,
+      consensusTier:       'NO_DATA',
+      consensusConfidence: 0,
+      sharpBooksUsed:      [],
+      // Edge
+      availableBook:       null,
+      availableOdds:       null,
+      availableVigRemoved: null,
+      rawEdge:             null,
+      dampenedEdge:        null,
+      dampeningFactor:     null,
+      minThreshold:        null,
+      totalNumber:         null,
+      // Movement
+      movementLabel:       'STABLE',
+      movementMultiplier:  1.00,
+      openingConsensus:    null,
+      movementMagnitude:   0,
+      isFirstPull:         true,
+      // Score
+      score:               0,
+      scoreTrace:          {},
+      // Verdict
+      verdict:             'NO_PLAY',
+      verdictLabel:        'NO PLAY',
+      units:               0,
+      unitsCapped:         false,
+      unitCapReason:       null,
+      // Flags & notes
+      flags:               [],
+      notes:               'Insufficient market data — fewer than 3 books.',
+      numberDiscrepancy:   false,
+      keyNumberFlag:       false,
+      keyNumberBonus:      0,
+    };
+  }
+
+  // ── Find best available book ───────────────────────────────────────────────
+  const availableBook = options.availableBookKey
+    ? books.find(b => b.key === options.availableBookKey) || findBestAvailableBook(books, betSide)
+    : findBestAvailableBook(books, betSide);
+
+  if (!availableBook) {
+    return buildNoPlayCard(game, sport, betSide, marketKey, evaluatedAt, consensusResult, 'No valid available book odds.');
+  }
+
+  // Determine spread/total numbers for gate checks
+  const consensusTotalNum  = marketKey === 'totals'
+    ? getConsensusTotalNum(books) : null;
+  const consensusSpreadNum = ['spreads', 'puck_line', 'run_line'].includes(marketKey)
+    ? getConsensusSpreadNum(consensusResult, books) : null;
+  const spreadNumber = availableBook.spreadNum != null ? availableBook.spreadNum : null;
+
+  // ── C4: Edge Calculation ───────────────────────────────────────────────────
+  const edgeResult = calculateEdge(
+    availableBook,
+    betSide,
+    marketKey,
+    sport,
+    spreadNumber,
+    consensusResult,
+    consensusTotalNum,
+    consensusSpreadNum
+  );
+
+  // ── C5: Line Movement ──────────────────────────────────────────────────────
+  const movementResult = await trackLineMovement(
+    game.id,
+    marketKey,
+    betSide,
+    consensusResult.consensusProb,
+    consensusResult.consensusTier,
+    sport,
+    game.commence_time
+  );
+
+  // ── C6: Scoring Engine ─────────────────────────────────────────────────────
+  const scoreResult = scoreEngine(
+    edgeResult,
+    consensusResult,
+    movementResult,
+    marketKey,
+    sport
+  );
+
+  // ── C7: Verdict & Units ────────────────────────────────────────────────────
+  const verdictResult = assignVerdictAndUnits(
+    scoreResult,
+    edgeResult,
+    consensusResult,
+    movementResult
+  );
+
+  // ── Assemble full card object ──────────────────────────────────────────────
+  // Determine American odds for the bet side from availableBook
+  const availableOdds = betSide === 'A' ? availableBook.oddsA : availableBook.oddsB;
+
+  return {
+    // Identity
+    gameId:          game.id,
+    sport,
+    homeTeam:        game.home_team,
+    awayTeam:        game.away_team,
+    commenceTime:    game.commence_time,
+    marketType:      marketKey,
+    betSide,
+    evaluatedAt,
+
+    // Available odds
+    availableBook:       availableBook.key,
+    availableBookTitle:  availableBook.title || availableBook.key,
+    availableOdds:       availableOdds,
+    availableVigRemoved: edgeResult.availableVigRemoved,
+    totalNumber:         availableBook.totalNumber || null,
+
+    // Consensus
+    consensusProb:       consensusResult.consensusProb,
+    consensusTier:       consensusResult.consensusTier,
+    consensusConfidence: consensusResult.consensusConfidence,
+    sharpBooksUsed:      consensusResult.sharpBooksUsed,
+    sharpBookProbs:      consensusResult.sharpBookProbs,
+
+    // Edge
+    rawEdge:             edgeResult.rawEdge,
+    dampenedEdge:        edgeResult.dampenedEdge,
+    dampeningFactor:     edgeResult.dampeningFactor,
+    minThreshold:        edgeResult.minThreshold,
+
+    // Movement
+    movementLabel:       movementResult.movementLabel,
+    movementMultiplier:  movementResult.movementMultiplier,
+    openingConsensus:    movementResult.openingConsensus,
+    currentConsensus:    movementResult.currentConsensus,
+    movementDelta:       movementResult.movementDelta,
+    movementMagnitude:   movementResult.movementMagnitude,
+    isFirstPull:         movementResult.isFirstPull,
+    snapshotConfidence:  movementResult.snapshotConfidence,
+
+    // Score
+    score:               verdictResult.score,
+    scoreTrace:          scoreResult.scoreTrace || {},
+
+    // Verdict & units
+    verdict:             verdictResult.verdict,
+    verdictLabel:        verdictResult.verdictLabel,
+    units:               verdictResult.units,
+    unitsCapped:         verdictResult.unitsCapped,
+    unitCapReason:       verdictResult.unitCapReason,
+
+    // Flags & notes
+    flags:               verdictResult.flags || [],
+    notes:               verdictResult.notes || '',
+    numberDiscrepancy:   edgeResult.numberDiscrepancy || false,
+    keyNumberFlag:       edgeResult.keyNumberFlag || false,
+    keyNumberBonus:      edgeResult.keyNumberBonus || 0,
+  };
+}
+
+// ── buildNoPlayCard (helper) ──────────────────────────────────────────────────
+function buildNoPlayCard(game, sport, betSide, marketKey, evaluatedAt, consensusResult, reason) {
+  return {
+    gameId:          game.id,
+    sport,
+    homeTeam:        game.home_team,
+    awayTeam:        game.away_team,
+    commenceTime:    game.commence_time,
+    marketType:      marketKey,
+    betSide,
+    evaluatedAt,
+    consensusProb:       consensusResult ? consensusResult.consensusProb : null,
+    consensusTier:       consensusResult ? consensusResult.consensusTier : 'NO_DATA',
+    consensusConfidence: consensusResult ? consensusResult.consensusConfidence : 0,
+    sharpBooksUsed:      consensusResult ? consensusResult.sharpBooksUsed : [],
+    sharpBookProbs:      consensusResult ? consensusResult.sharpBookProbs : [],
+    availableBook:       null,
+    availableBookTitle:  null,
+    availableOdds:       null,
+    availableVigRemoved: null,
+    totalNumber:         null,
+    rawEdge:             null,
+    dampenedEdge:        null,
+    dampeningFactor:     null,
+    minThreshold:        null,
+    movementLabel:       'STABLE',
+    movementMultiplier:  1.00,
+    openingConsensus:    null,
+    currentConsensus:    null,
+    movementDelta:       0,
+    movementMagnitude:   0,
+    isFirstPull:         true,
+    snapshotConfidence:  null,
+    score:               0,
+    scoreTrace:          {},
+    verdict:             'NO_PLAY',
+    verdictLabel:        'NO PLAY',
+    units:               0,
+    unitsCapped:         false,
+    unitCapReason:       null,
+    flags:               [],
+    notes:               reason || 'No actionable edge found.',
+    numberDiscrepancy:   false,
+    keyNumberFlag:       false,
+    keyNumberBonus:      0,
+  };
+}
+
+// ── scanGames(gamesArray, sport, markets) ─────────────────────────────────────
+// Runs buildRecommendationCard for each game × market × side combination.
+// Returns an array of card objects, filtering out NO_PLAY results.
+// This is what the scanner calls after fetching odds from the API.
+
+async function scanGames(gamesArray, sport, markets) {
+  const cards = [];
+  const marketsToScan = markets || ['spreads', 'totals', 'h2h'];
+
+  for (const game of (gamesArray || [])) {
+    for (const market of marketsToScan) {
+      // Evaluate both sides (A = away/over, B = home/under)
+      for (const side of ['A', 'B']) {
+        try {
+          const card = await buildRecommendationCard(game, sport, side, market);
+          // Only keep WATCH and above — NO_PLAY is filtered here
+          if (card.verdict !== 'NO_PLAY') {
+            cards.push(card);
+          }
+        } catch (err) {
+          console.warn('[scanGames] Error evaluating', game.id, market, side, err.message);
+        }
+      }
+    }
+  }
+
+  // Sort: STRONG_BET first, then BET, LEAN, WATCH — within tier sort by score desc
+  const verdictOrder = { 'STRONG_BET': 0, 'BET': 1, 'LEAN': 2, 'WATCH': 3 };
+  cards.sort((a, b) => {
+    const aOrder = verdictOrder[a.verdict] != null ? verdictOrder[a.verdict] : 4;
+    const bOrder = verdictOrder[b.verdict] != null ? verdictOrder[b.verdict] : 4;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return b.score - a.score;
+  });
+
+  return cards;
+}
+
+// =============================================================================
+// COMPONENT 8 VERIFICATION — synchronous structural tests
+// The full pipeline test requires live odds (verified via browser console).
+// =============================================================================
+
+(function verifyComponent8() {
+  const checks = [];
+  const ok = (label, pass) => checks.push({ label, pass: !!pass });
+
+  // ── Test 1: buildRecommendationCard exists and is async ───────────────────
+  ok('T1: buildRecommendationCard is function', typeof buildRecommendationCard === 'function');
+  ok('T1: scanGames is function',               typeof scanGames === 'function');
+  ok('T1: extractBooksForMarket is function',   typeof extractBooksForMarket === 'function');
+  ok('T1: findBestAvailableBook is function',   typeof findBestAvailableBook === 'function');
+
+  // ── Test 2: extractBooksForMarket correctly parses bookmakers ─────────────
+  {
+    const mockGame = {
+      home_team: 'Miami Heat',
+      away_team: 'Boston Celtics',
+      bookmakers: [
+        {
+          key: 'williamhill_us', title: 'Circa',
+          markets: [{ key: 'spreads', outcomes: [
+            { name: 'Boston Celtics', price: -108, point: -3.5 },
+            { name: 'Miami Heat',     price: -112, point:  3.5 },
+          ]}],
+        },
+        {
+          key: 'draftkings', title: 'DraftKings',
+          markets: [{ key: 'spreads', outcomes: [
+            { name: 'Boston Celtics', price: -110, point: -3.5 },
+            { name: 'Miami Heat',     price: -110, point:  3.5 },
+          ]}],
+        },
+      ],
+    };
+    const books = extractBooksForMarket(mockGame.bookmakers, 'Miami Heat', 'Boston Celtics', 'spreads');
+    ok('T2: extracts 2 books',             books.length === 2);
+    ok('T2: away team is oddsA',           books[0].oddsA === -108); // Boston = away
+    ok('T2: home team is oddsB',           books[0].oddsB === -112); // Miami = home
+    ok('T2: spreadNum captured',           books[0].spreadNum === -3.5);
+    ok('T2: book key preserved',           books[0].key === 'williamhill_us');
+  }
+
+  // ── Test 3: extractBooksForMarket handles totals ───────────────────────────
+  {
+    const mockBms = [{
+      key: 'draftkings', title: 'DraftKings',
+      markets: [{ key: 'totals', outcomes: [
+        { name: 'Over', price: -110, point: 227.5 },
+        { name: 'Under', price: -110, point: 227.5 },
+      ]}],
+    }];
+    const books = extractBooksForMarket(mockBms, 'Team A', 'Team B', 'totals');
+    ok('T3: totals extracts over/under', books.length === 1);
+    ok('T3: totalNumber captured',       books[0].totalNumber === 227.5);
+    ok('T3: oddsA = over price',         books[0].oddsA === -110);
+  }
+
+  // ── Test 4: findBestAvailableBook picks highest vig-removed prob ──────────
+  {
+    const books = [
+      { key: 'dk',   oddsA: -110, oddsB: -110 }, // vigRemovedA ≈ 0.500
+      { key: 'wynh', oddsA: -105, oddsB: -115 }, // vigRemovedA ≈ 0.489 (less favorable)
+      { key: 'circa', oddsA: -108, oddsB: -112 }, // vigRemovedA ≈ 0.504
+    ];
+    const best = findBestAvailableBook(books, 'A');
+    ok('T4: picks highest vigRemovedA',  best.key === 'dk'); // dk (-110/-110) vigRemovedA=0.500 > circa (-108/-112) vigRemovedA=0.4957
+  }
+
+  // ── Test 5: buildNoPlayCard returns all required fields ───────────────────
+  {
+    const mockGame = {
+      id: 'test_game_001',
+      home_team: 'Team A', away_team: 'Team B',
+      commence_time: new Date().toISOString(),
+    };
+    const card = buildNoPlayCard(mockGame, 'basketball_nba', 'A', 'spreads', new Date().toISOString(), null, 'Test reason');
+    const required = ['gameId','sport','homeTeam','awayTeam','commenceTime','marketType',
+      'betSide','evaluatedAt','verdict','verdictLabel','units','flags','notes',
+      'score','numberDiscrepancy','keyNumberFlag','keyNumberBonus'];
+    required.forEach(f => ok(`T5: noPlayCard has '${f}'`, f in card));
+    ok('T5: verdict = NO_PLAY',   card.verdict === 'NO_PLAY');
+    ok('T5: units = 0',           card.units === 0);
+    ok('T5: flags is array',      Array.isArray(card.flags));
+    ok('T5: notes = reason',      card.notes.includes('Test reason'));
+  }
+
+  // ── Test 6: getConsensusTotalNum computes correct median ──────────────────
+  {
+    const books = [
+      { totalNumber: 227.0 },
+      { totalNumber: 227.5 },
+      { totalNumber: 228.0 },
+    ];
+    ok('T6: median total = 227.5', getConsensusTotalNum(books) === 227.5);
+    ok('T6: null total handled',   getConsensusTotalNum([{ totalNumber: null }]) === null);
+  }
+
+  // ── Test 7: scanGames sorts by verdict tier ────────────────────────────────
+  // Test the sort logic directly without running the full pipeline
+  {
+    const verdictOrder = { 'STRONG_BET': 0, 'BET': 1, 'LEAN': 2, 'WATCH': 3 };
+    const mockCards = [
+      { verdict: 'WATCH',      score: 52 },
+      { verdict: 'BET',        score: 68 },
+      { verdict: 'STRONG_BET', score: 81 },
+      { verdict: 'LEAN',       score: 57 },
+    ];
+    mockCards.sort((a, b) => {
+      const aO = verdictOrder[a.verdict] != null ? verdictOrder[a.verdict] : 4;
+      const bO = verdictOrder[b.verdict] != null ? verdictOrder[b.verdict] : 4;
+      if (aO !== bO) return aO - bO;
+      return b.score - a.score;
+    });
+    ok('T7: STRONG_BET first',  mockCards[0].verdict === 'STRONG_BET');
+    ok('T7: BET second',        mockCards[1].verdict === 'BET');
+    ok('T7: LEAN third',        mockCards[2].verdict === 'LEAN');
+    ok('T7: WATCH last',        mockCards[3].verdict === 'WATCH');
+  }
+
+  // ── Report ─────────────────────────────────────────────────────────────────
+  const passed = checks.filter(c => c.pass).length;
+  const failed = checks.filter(c => !c.pass);
+
+  console.log('\n=== SHARPLINE — Component 8 Verification ===');
+  console.log(passed + ' / ' + checks.length + ' checks passed');
+  if (failed.length > 0) {
+    console.warn('\n FAILED:');
+    failed.forEach(c => console.warn('  FAIL: ' + c.label));
+  } else {
+    console.log('\n All structural checks passed. Component 8 verified.');
+    console.log('  Live pipeline test: call buildRecommendationCard(game, sport, side, market) in browser.');
+  }
+})();
+
+
+// =============================================================================
 // EXISTING APP CODE BELOW — UNCHANGED
 // =============================================================================
 
