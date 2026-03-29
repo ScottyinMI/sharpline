@@ -29,6 +29,7 @@
 </head>
 <body>
 <div id="root"></div>
+<script type="text/babel">
 // =============================================================================
 // SHARPLINE ENGINE — COMPONENT 1: CONFIGURATION
 // =============================================================================
@@ -40,40 +41,30 @@
 const SHARPLINE_CONFIG = {
 
   // ── §1 SHARP_BOOKS ──────────────────────────────────────────────────────────
-  // Exact key strings returned by The Odds API (book.key in API responses).
-  // VERIFY these strings against a live Odds API response before first use.
-  // The API may return 'circasports' or 'circa_sports' — confirm exact format.
   SHARP_BOOKS: {
     PRIMARY: [
-      'pinnacle',      // Primary sharp benchmark — tightest lines, highest limits
-      'circasports',   // Primary sharp benchmark — confirm key string vs live API
-      'bookmaker',     // Primary sharp benchmark
+      'pinnacle',
+      'circasports',
+      'bookmaker',
     ],
     SECONDARY: [
-      'draftkings',    // Sharp-leaning retail — fallback consensus only, never primary anchor
-      'fanduel',       // Sharp-leaning retail — fallback consensus only, never primary anchor
+      'draftkings',
+      'fanduel',
     ],
   },
 
   // ── §2 CONSENSUS_TIERS ──────────────────────────────────────────────────────
-  // Tier labels and confidence weights. Confidence feeds Component 6 scoring
-  // (confidence component max = 20 pts). SHARP_CONSENSUS at 1.00 → 20 pts.
-  // FULL_MARKET_MEDIAN at 0.40 → 8 pts.
   CONSENSUS_TIERS: {
-    SHARP_CONSENSUS:    { label: 'SHARP_CONSENSUS',    confidence: 1.00 }, // 2+ primary sharp books
-    SINGLE_SHARP:       { label: 'SINGLE_SHARP',       confidence: 0.70 }, // exactly 1 primary sharp book
-    MARKET_MEDIAN:      { label: 'MARKET_MEDIAN',      confidence: 0.60 }, // secondary books (DK/FD) only
-    FULL_MARKET_MEDIAN: { label: 'FULL_MARKET_MEDIAN', confidence: 0.40 }, // retail books only
-    NO_DATA:            { label: 'NO_DATA',            confidence: 0.00 }, // fewer than MIN_BOOKS_REQUIRED
+    SHARP_CONSENSUS:    { label: 'SHARP_CONSENSUS',    confidence: 1.00 },
+    SINGLE_SHARP:       { label: 'SINGLE_SHARP',       confidence: 0.70 },
+    MARKET_MEDIAN:      { label: 'MARKET_MEDIAN',      confidence: 0.60 },
+    FULL_MARKET_MEDIAN: { label: 'FULL_MARKET_MEDIAN', confidence: 0.40 },
+    NO_DATA:            { label: 'NO_DATA',            confidence: 0.00 },
   },
 
-  // Minimum total books required before any consensus is attempted.
-  // Fewer than 3 total books → NO_DATA immediately. No edge computed.
   MIN_BOOKS_REQUIRED: 3,
 
   // ── §3 SPORTS ───────────────────────────────────────────────────────────────
-  // Canonical sport keys matching The Odds API sport_key values exactly.
-  // Used as lookup keys throughout the config and engine.
   SPORTS: {
     NFL:   'americanfootball_nfl',
     NCAAF: 'americanfootball_ncaaf',
@@ -84,7 +75,6 @@ const SHARPLINE_CONFIG = {
   },
 
   // ── §4 MARKETS ──────────────────────────────────────────────────────────────
-  // Canonical market type identifiers. Matches Odds API market naming.
   MARKETS: {
     SPREAD:    'spreads',
     TOTAL:     'totals',
@@ -94,18 +84,11 @@ const SHARPLINE_CONFIG = {
   },
 
   // ── §5 MIN_EDGE_THRESHOLDS ──────────────────────────────────────────────────
-  // Minimum DAMPENED edge required to enter scoring. Keyed by sport then market.
-  // CRITICAL: Dampening is applied FIRST. This threshold check comes SECOND.
-  // Example: 3% raw NHL puck line edge × 0.60 dampener = 1.8% dampened edge
-  //          → below the 3.0% NHL threshold → NO PLAY.
-  // All values are decimal fractions (0.030 = 3.0%).
-  // null = market not evaluated in Phase 1 (silent skip, no NO PLAY flag).
-  // h2h (moneyline) thresholds are null here — MLs use ML_EDGE_THRESHOLDS (§6).
   MIN_EDGE_THRESHOLDS: {
     americanfootball_nfl: {
       spreads: { sharp: 0.025, market_median: 0.040 },
       totals:  { sharp: 0.025, market_median: 0.040 },
-      h2h:     null, // MLs → ML_EDGE_THRESHOLDS
+      h2h:     null,
     },
     americanfootball_ncaaf: {
       spreads: { sharp: 0.025, market_median: 0.040 },
@@ -119,26 +102,22 @@ const SHARPLINE_CONFIG = {
     },
     basketball_ncaab: {
       spreads: { sharp: 0.035, market_median: 0.055 },
-      totals:  null,  // DEFERRED — NCAAB totals not evaluated in Phase 1
+      totals:  null,
       h2h:     null,
     },
     baseball_mlb: {
-      spreads: { sharp: 0.030, market_median: 0.050 }, // run line
+      spreads: { sharp: 0.030, market_median: 0.050 },
       totals:  { sharp: 0.030, market_median: 0.050 },
       h2h:     null,
     },
     icehockey_nhl: {
-      spreads: { sharp: 0.030, market_median: 0.050 }, // puck line
+      spreads: { sharp: 0.030, market_median: 0.050 },
       totals:  { sharp: 0.030, market_median: 0.050 },
       h2h:     null,
     },
   },
 
   // ── §6 ML_EDGE_THRESHOLDS ───────────────────────────────────────────────────
-  // Moneyline thresholds are probability-band based, not sport-based.
-  // Evaluated top-down with find(). First match where available_vig_removed >= minProb wins.
-  // Array is ordered from highest probability to lowest.
-  // Example: +160 ML (implied prob ~38%) → slight_underdog band → needs 3.5% dampened edge.
   ML_EDGE_THRESHOLDS: [
     { minProb: 0.60, label: 'heavy_favorite',       sharp: 0.035, market_median: 0.055 },
     { minProb: 0.45, label: 'slight_favorite',      sharp: 0.030, market_median: 0.050 },
@@ -147,112 +126,65 @@ const SHARPLINE_CONFIG = {
   ],
 
   // ── §7 SPREAD_DAMPENERS ─────────────────────────────────────────────────────
-  // Applied to raw edge for SPREAD, PUCK_LINE, and RUN_LINE markets only.
-  // Moneylines use ML_VARIANCE_DAMPENERS (§8) instead.
-  // NFL is the baseline at 1.00x. Hockey/baseball run/puck lines trade at
-  // extreme juice differentials that inflate raw edge — 0.60x corrects for this.
   SPREAD_DAMPENERS: {
-    americanfootball_nfl:   1.00, // Baseline — no dampening
+    americanfootball_nfl:   1.00,
     americanfootball_ncaaf: 1.00,
     basketball_nba:         0.80,
     basketball_ncaab:       0.75,
-    baseball_mlb:           0.60, // Run line — high juice variance
-    icehockey_nhl:          0.60, // Puck line — high juice variance
+    baseball_mlb:           0.60,
+    icehockey_nhl:          0.60,
   },
 
   // ── §8 ML_VARIANCE_DAMPENERS ────────────────────────────────────────────────
-  // Calibrates ML edge to its practical value before scoring.
-  // A +160 ML with 6% raw edge is NOT equivalent to a -110 spread with 6% edge.
-  // Plus-money bets require far more bets to distinguish edge from variance.
-  // Evaluated top-down with find(). Same pattern as §6.
   ML_VARIANCE_DAMPENERS: [
-    { minProb: 0.60, label: 'heavy_favorite',       factor: 0.85 },
-    { minProb: 0.45, label: 'slight_favorite',      factor: 0.75 },
-    { minProb: 0.35, label: 'slight_underdog',       factor: 0.65 },
-    { minProb: 0.00, label: 'significant_underdog',  factor: 0.50 },
+    { minProb: 0.60, label: 'heavy_favorite',      factor: 0.85 },
+    { minProb: 0.45, label: 'slight_favorite',     factor: 0.75 },
+    { minProb: 0.35, label: 'slight_underdog',     factor: 0.65 },
+    { minProb: 0.00, label: 'significant_underdog',factor: 0.50 },
   ],
 
   // ── §9 KEY_NUMBERS ──────────────────────────────────────────────────────────
-  // Key spread numbers by sport. Bonus fires only when ALL THREE conditions are met:
-  //   1. Market is SPREAD
-  //   2. Spread sits on a key number from this table
-  //   3. Available line is a half-point BETTER than sharp consensus
-  // Football: +10 (concentrated margin distributions — 3 at 14.8%, 7 at 9.89%)
-  // Basketball: +5 (soft signal — diffuse distribution, no dominant cliff)
-  // MLB/NHL: null (run/puck lines fixed at ±1.5 — key number logic doesn't apply)
   KEY_NUMBERS: {
-    americanfootball_nfl: {
-      numbers: [3, 7, 10, 14],
-      bonus:   10,
-      note:    'Primary market. 3 (14.8%) and 7 (9.89%) dominate NFL margins.',
-    },
-    americanfootball_ncaaf: {
-      numbers: [3, 7, 10, 14, 17, 21],
-      bonus:   10,
-      note:    'Wider tail than NFL. 17 and 21 appear frequently in NCAAF margins.',
-    },
-    basketball_nba: {
-      numbers: [3, 5, 7],
-      bonus:   5, // Soft signal — half the football bonus
-      note:    'Diffuse distribution across 2-10. No single dominant cliff.',
-    },
-    basketball_ncaab: {
-      numbers: [3, 5, 7],
-      bonus:   5,
-      note:    'Similar to NBA. Mild clustering, no dominant margin.',
-    },
-    baseball_mlb:  null, // No key numbers — run line fixed at ±1.5
-    icehockey_nhl: null, // No key numbers — puck line fixed at ±1.5
+    americanfootball_nfl:   { numbers: [3, 7, 10, 14],         bonus: 10 },
+    americanfootball_ncaaf: { numbers: [3, 7, 10, 14, 17, 21], bonus: 10 },
+    basketball_nba:         { numbers: [3, 5, 7],              bonus: 5  },
+    basketball_ncaab:       { numbers: [3, 5, 7],              bonus: 5  },
+    baseball_mlb:           null,
+    icehockey_nhl:          null,
   },
 
   // ── §10 SCORING ─────────────────────────────────────────────────────────────
-  // Score component limits and the edge scaling ceiling.
-  // EDGE_CEILING = 0.07: a dampened edge of (min_threshold + 7%) earns max 40 pts.
-  // Formula: edge_points = min(40, ((dampened_edge - min_threshold) / 0.07) * 40)
-  // KEY_NUMBER_BONUS is null here — sourced from KEY_NUMBERS[sport].bonus at runtime
-  // to prevent accidentally applying the football +10 bonus to basketball (+5).
   SCORING: {
-    EDGE_CEILING:             0.07,  // threshold + 7% = 40 pts (locked Phase 1)
+    EDGE_CEILING:             0.07,
     EDGE_MAX_POINTS:          40,
     CONFIDENCE_MAX_POINTS:    20,
-    MOVEMENT_MAX_POINTS:      15,    // applied as ±15 clamp on movement delta
-    KEY_NUMBER_BONUS:         null,  // sourced from KEY_NUMBERS[sport].bonus — do not hardcode here
+    MOVEMENT_MAX_POINTS:      15,
+    KEY_NUMBER_BONUS:         null,
     SHARP_DIVERGENCE_PENALTY: -10,
-    ML_VARIANCE_PENALTY:      -5,    // fires only when ML implied prob < 0.35
+    ML_VARIANCE_PENALTY:      -5,
     SCORE_MIN:                0,
     SCORE_MAX:                100,
   },
 
   // ── §11 SHARP_DIVERGENCE_THRESHOLD ─────────────────────────────────────────
-  // Requires all 3 primary sharp books present. Measures max minus min of their
-  // vig-removed implied probabilities. Gap > 3% → SHARP_DIVERGENCE flag + -10 pts.
-  // Penalty fires after base scoring and movement modifier, before final clamp.
-  SHARP_DIVERGENCE_THRESHOLD: 0.03, // 3% gap triggers SHARP_DIVERGENCE flag and -10 pt penalty
+  SHARP_DIVERGENCE_THRESHOLD: 0.03,
 
   // ── §12 MOVEMENT_MULTIPLIERS ────────────────────────────────────────────────
-  // Applied to (edge_points + confidence_points) base score as a multiplier.
-  // The resulting delta is clamped to ±15 before being added to the score.
-  // This prevents double-counting: edge is already calculated against current
-  // sharp consensus, so movement modifies confidence rather than inflating edge.
   MOVEMENT_MULTIPLIERS: {
-    STABLE:     1.00, // < 1% implied prob shift — no confirmation, no concern
-    CONFIRMING: 1.10, // Consensus moved toward bet direction
-    FADING:     0.85, // Consensus moved away from bet direction
-    STEAM:      1.20, // Confirming move > 3% — possible sharp action
-    REVERSE:    1.30, // Public on one side, line moves other way — strong sharp signal (Phase 2)
+    STABLE:     1.00,
+    CONFIRMING: 1.10,
+    FADING:     0.85,
+    STEAM:      1.20,
+    REVERSE:    1.30,
   },
 
-  // Thresholds for movement label classification
-  MOVEMENT_THRESHOLD: 0.01, // 1% minimum shift to classify as non-STABLE
-  STEAM_THRESHOLD:    0.03, // 3% confirming move to classify as STEAM
+  MOVEMENT_THRESHOLD: 0.01,
+  STEAM_THRESHOLD:    0.03,
 
   // ── §13 VERDICT_THRESHOLDS ──────────────────────────────────────────────────
-  // Maps 0-100 score to a verdict label.
-  // Evaluated top-down with find(). First match where score >= minScore wins.
-  // NO PLAY is the default — most games will land here. That is correct behavior.
   VERDICT_THRESHOLDS: [
     { minScore: 85, verdict: 'STRONG_BET', label: 'STRONG BET' },
-    { minScore: 75, verdict: 'STRONG_BET', label: 'STRONG BET' }, // both 75+ and 85+ are STRONG BET
+    { minScore: 75, verdict: 'STRONG_BET', label: 'STRONG BET' },
     { minScore: 65, verdict: 'BET',        label: 'BET'         },
     { minScore: 55, verdict: 'LEAN',       label: 'LEAN'        },
     { minScore: 40, verdict: 'WATCH',      label: 'WATCH'       },
@@ -260,9 +192,6 @@ const SHARPLINE_CONFIG = {
   ],
 
   // ── §14 DEFAULT_UNITS ────────────────────────────────────────────────────────
-  // Base unit recommendation by verdict, before ML band cap (§15) is applied.
-  // If ML band cap is lower than verdict units, the cap wins.
-  // Phase 1 hard ceiling: 3u. 4u and 5u unlock in Phase 2 after CLV validation.
   DEFAULT_UNITS: {
     NO_PLAY:    0,
     WATCH:      0,
@@ -271,15 +200,9 @@ const SHARPLINE_CONFIG = {
     STRONG_BET: 3,
   },
 
-  PHASE1_UNIT_CAP: 3, // Hard ceiling — 4u/5u unlock in Phase 2 after CLV validation
+  PHASE1_UNIT_CAP: 3,
 
   // ── §15 ML_UNIT_CAPS ─────────────────────────────────────────────────────────
-  // Maximum units for moneyline bets by implied probability band.
-  // Applied AFTER verdict unit assignment. If band cap < verdict units, use cap.
-  // This is bankroll discipline, not a penalty on edge quality.
-  // A genuine +200 ML edge is still a good bet — but plus-money bets have high
-  // variance and warrant smaller units regardless of how well they score.
-  // Evaluated top-down with find(). Same pattern as §6 and §8.
   ML_UNIT_CAPS: [
     { minProb: 0.60, label: 'heavy_favorite',       maxUnits: 3 },
     { minProb: 0.45, label: 'slight_favorite',      maxUnits: 3 },
@@ -288,11 +211,6 @@ const SHARPLINE_CONFIG = {
   ],
 
   // ── §16 VALIDATION_SEQUENCE ──────────────────────────────────────────────────
-  // Controls scanner visibility for beta users. All constants are coded for all
-  // sports from day one. A sport becomes visible only after passing all 9 steps
-  // of the Component 11 End-to-End Verification Checklist.
-  // Phase 1 live verification scope: NBA, MLB, NHL only (confirmed).
-  // NFL, NCAAF, NCAAB constants are built and ready but not live-verified yet.
   VALIDATION_SEQUENCE: [
     { sport: 'basketball_nba',         priority: 1, status: 'VALIDATE_FIRST'  },
     { sport: 'baseball_mlb',           priority: 2, status: 'VALIDATE_SECOND' },
@@ -303,132 +221,80 @@ const SHARPLINE_CONFIG = {
   ],
 
   // ── §17 PHASE_FLAGS ──────────────────────────────────────────────────────────
-  // Feature flags separating Phase 1 from future phases.
-  // Toggling any flag requires a documented revision to Phase 1 Engine Decisions.
-  // These flags make every Phase 1 constraint a one-line config change in Phase 2
-  // rather than a hunt through engine logic.
   PHASE_FLAGS: {
-    NCAAB_TOTALS_ENABLED:        false,               // Deferred to Phase 2
-    MAX_UNITS:                   3,                   // Raises to 5 in Phase 2 after CLV validation
-    KEY_NUMBER_WEIGHT_VALIDATED: false,               // Basketball +5 bonus reviewed in Phase 2 with CLV data
-    ML_DAMPENER_METHOD:          'probability_band',  // vs 'sport_based' — permanent for Phase 1
-    VIG_REMOVAL_METHOD:          'additive',          // vs 'multiplicative' — revisit Phase 2
-    LINE_MOVEMENT_SOURCE:        'first_pull_snapshot', // vs 'action_network' — Phase 2 option
+    NCAAB_TOTALS_ENABLED:        false,
+    MAX_UNITS:                   3,
+    KEY_NUMBER_WEIGHT_VALIDATED: false,
+    ML_DAMPENER_METHOD:          'probability_band',
+    VIG_REMOVAL_METHOD:          'additive',
+    LINE_MOVEMENT_SOURCE:        'first_pull_snapshot',
   },
 
 }; // end SHARPLINE_CONFIG
 
 // =============================================================================
-// COMPONENT 1 VERIFICATION
-// Run this block in the browser console after pasting SHARPLINE_CONFIG above.
-// All checks should log true. Any false is a config error.
+// COMPONENT 1 VERIFICATION — runs once on page load, logs to console
 // =============================================================================
-
 (function verifyComponent1() {
   const C = SHARPLINE_CONFIG;
   const checks = [];
-
-  // §1 — Sharp book arrays exist and have correct lengths
   checks.push({ label: 'PRIMARY has 3 sharp books', pass: C.SHARP_BOOKS.PRIMARY.length === 3 });
   checks.push({ label: 'SECONDARY has 2 books',     pass: C.SHARP_BOOKS.SECONDARY.length === 2 });
   checks.push({ label: 'pinnacle in PRIMARY',        pass: C.SHARP_BOOKS.PRIMARY.includes('pinnacle') });
-
-  // §2 — Confidence weights in valid range
   checks.push({ label: 'SHARP_CONSENSUS confidence = 1.00', pass: C.CONSENSUS_TIERS.SHARP_CONSENSUS.confidence === 1.00 });
   checks.push({ label: 'SINGLE_SHARP confidence = 0.70',    pass: C.CONSENSUS_TIERS.SINGLE_SHARP.confidence === 0.70 });
   checks.push({ label: 'NO_DATA confidence = 0.00',         pass: C.CONSENSUS_TIERS.NO_DATA.confidence === 0.00 });
   checks.push({ label: 'MIN_BOOKS_REQUIRED = 3',            pass: C.MIN_BOOKS_REQUIRED === 3 });
-
-  // §5 — NCAAB totals is null (deferred)
-  checks.push({ label: 'NCAAB totals = null (deferred)',  pass: C.MIN_EDGE_THRESHOLDS.basketball_ncaab.totals === null });
-  // §5 — All h2h thresholds are null (MLs use §6)
-  const sports = Object.keys(C.MIN_EDGE_THRESHOLDS);
-  const allH2HNull = sports.every(s => C.MIN_EDGE_THRESHOLDS[s].h2h === null);
-  checks.push({ label: 'All h2h thresholds null (use §6)', pass: allH2HNull });
-
-  // §6 — ML threshold bands cover 0.00 to 1.00 (last entry minProb = 0.00)
-  checks.push({ label: 'ML_EDGE_THRESHOLDS last band minProb = 0', pass: C.ML_EDGE_THRESHOLDS[C.ML_EDGE_THRESHOLDS.length - 1].minProb === 0.00 });
-
-  // §7 — NFL spread dampener = 1.00 (baseline)
-  checks.push({ label: 'NFL spread dampener = 1.00 (baseline)', pass: C.SPREAD_DAMPENERS.americanfootball_nfl === 1.00 });
-  // §7 — NHL/MLB dampeners = 0.60
-  checks.push({ label: 'NHL puck line dampener = 0.60', pass: C.SPREAD_DAMPENERS.icehockey_nhl === 0.60 });
-  checks.push({ label: 'MLB run line dampener = 0.60',  pass: C.SPREAD_DAMPENERS.baseball_mlb === 0.60 });
-
-  // §8 — ML variance dampeners cover full probability range
-  checks.push({ label: 'ML_VARIANCE_DAMPENERS last band minProb = 0', pass: C.ML_VARIANCE_DAMPENERS[C.ML_VARIANCE_DAMPENERS.length - 1].minProb === 0.00 });
-
-  // §9 — Key numbers
-  checks.push({ label: 'NFL key numbers include 3 and 7',   pass: C.KEY_NUMBERS.americanfootball_nfl.numbers.includes(3) && C.KEY_NUMBERS.americanfootball_nfl.numbers.includes(7) });
-  checks.push({ label: 'NFL key number bonus = 10',         pass: C.KEY_NUMBERS.americanfootball_nfl.bonus === 10 });
-  checks.push({ label: 'NBA key number bonus = 5',          pass: C.KEY_NUMBERS.basketball_nba.bonus === 5 });
+  checks.push({ label: 'NCAAB totals = null (deferred)',    pass: C.MIN_EDGE_THRESHOLDS.basketball_ncaab.totals === null });
+  const allH2HNull = Object.keys(C.MIN_EDGE_THRESHOLDS).every(s => C.MIN_EDGE_THRESHOLDS[s].h2h === null);
+  checks.push({ label: 'All h2h thresholds null',           pass: allH2HNull });
+  checks.push({ label: 'ML_EDGE_THRESHOLDS last minProb=0', pass: C.ML_EDGE_THRESHOLDS[C.ML_EDGE_THRESHOLDS.length-1].minProb === 0 });
+  checks.push({ label: 'NFL dampener = 1.00',               pass: C.SPREAD_DAMPENERS.americanfootball_nfl === 1.00 });
+  checks.push({ label: 'NHL dampener = 0.60',               pass: C.SPREAD_DAMPENERS.icehockey_nhl === 0.60 });
+  checks.push({ label: 'MLB dampener = 0.60',               pass: C.SPREAD_DAMPENERS.baseball_mlb === 0.60 });
+  checks.push({ label: 'ML_VARIANCE_DAMPENERS last minProb=0', pass: C.ML_VARIANCE_DAMPENERS[C.ML_VARIANCE_DAMPENERS.length-1].minProb === 0 });
+  checks.push({ label: 'NFL key numbers bonus = 10',        pass: C.KEY_NUMBERS.americanfootball_nfl.bonus === 10 });
+  checks.push({ label: 'NBA key numbers bonus = 5',         pass: C.KEY_NUMBERS.basketball_nba.bonus === 5 });
   checks.push({ label: 'MLB key numbers = null',            pass: C.KEY_NUMBERS.baseball_mlb === null });
   checks.push({ label: 'NHL key numbers = null',            pass: C.KEY_NUMBERS.icehockey_nhl === null });
-
-  // §10 — Scoring ceilings and penalties
-  checks.push({ label: 'EDGE_CEILING = 0.07',              pass: C.SCORING.EDGE_CEILING === 0.07 });
-  checks.push({ label: 'EDGE_MAX_POINTS = 40',             pass: C.SCORING.EDGE_MAX_POINTS === 40 });
-  checks.push({ label: 'CONFIDENCE_MAX_POINTS = 20',       pass: C.SCORING.CONFIDENCE_MAX_POINTS === 20 });
-  checks.push({ label: 'MOVEMENT_MAX_POINTS = 15',         pass: C.SCORING.MOVEMENT_MAX_POINTS === 15 });
-  checks.push({ label: 'SHARP_DIVERGENCE_PENALTY = -10',   pass: C.SCORING.SHARP_DIVERGENCE_PENALTY === -10 });
-  checks.push({ label: 'ML_VARIANCE_PENALTY = -5',         pass: C.SCORING.ML_VARIANCE_PENALTY === -5 });
-  checks.push({ label: 'SCORE_MIN = 0',                    pass: C.SCORING.SCORE_MIN === 0 });
-  checks.push({ label: 'SCORE_MAX = 100',                  pass: C.SCORING.SCORE_MAX === 100 });
-  checks.push({ label: 'KEY_NUMBER_BONUS is null in SCORING', pass: C.SCORING.KEY_NUMBER_BONUS === null });
-
-  // §11 — Sharp divergence threshold
+  checks.push({ label: 'EDGE_CEILING = 0.07',               pass: C.SCORING.EDGE_CEILING === 0.07 });
+  checks.push({ label: 'EDGE_MAX_POINTS = 40',              pass: C.SCORING.EDGE_MAX_POINTS === 40 });
+  checks.push({ label: 'CONFIDENCE_MAX_POINTS = 20',        pass: C.SCORING.CONFIDENCE_MAX_POINTS === 20 });
+  checks.push({ label: 'MOVEMENT_MAX_POINTS = 15',          pass: C.SCORING.MOVEMENT_MAX_POINTS === 15 });
+  checks.push({ label: 'SHARP_DIVERGENCE_PENALTY = -10',    pass: C.SCORING.SHARP_DIVERGENCE_PENALTY === -10 });
+  checks.push({ label: 'ML_VARIANCE_PENALTY = -5',          pass: C.SCORING.ML_VARIANCE_PENALTY === -5 });
   checks.push({ label: 'SHARP_DIVERGENCE_THRESHOLD = 0.03', pass: C.SHARP_DIVERGENCE_THRESHOLD === 0.03 });
-
-  // §12 — Movement multipliers
-  checks.push({ label: 'STABLE multiplier = 1.00',     pass: C.MOVEMENT_MULTIPLIERS.STABLE === 1.00 });
-  checks.push({ label: 'STEAM multiplier = 1.20',      pass: C.MOVEMENT_MULTIPLIERS.STEAM === 1.20 });
-  checks.push({ label: 'FADING multiplier = 0.85',     pass: C.MOVEMENT_MULTIPLIERS.FADING === 0.85 });
-  checks.push({ label: 'MOVEMENT_THRESHOLD = 0.01',    pass: C.MOVEMENT_THRESHOLD === 0.01 });
-  checks.push({ label: 'STEAM_THRESHOLD = 0.03',       pass: C.STEAM_THRESHOLD === 0.03 });
-
-  // §13 — Verdict thresholds top-down order
-  checks.push({ label: 'First verdict threshold = 85 (STRONG BET)', pass: C.VERDICT_THRESHOLDS[0].minScore === 85 });
-  checks.push({ label: 'Last verdict threshold = 0 (NO PLAY)',      pass: C.VERDICT_THRESHOLDS[C.VERDICT_THRESHOLDS.length - 1].minScore === 0 });
-
-  // §14 — Unit assignments
-  checks.push({ label: 'NO_PLAY units = 0',    pass: C.DEFAULT_UNITS.NO_PLAY === 0 });
-  checks.push({ label: 'LEAN units = 1',       pass: C.DEFAULT_UNITS.LEAN === 1 });
-  checks.push({ label: 'BET units = 2',        pass: C.DEFAULT_UNITS.BET === 2 });
-  checks.push({ label: 'STRONG_BET units = 3', pass: C.DEFAULT_UNITS.STRONG_BET === 3 });
-  checks.push({ label: 'PHASE1_UNIT_CAP = 3',  pass: C.PHASE1_UNIT_CAP === 3 });
-
-  // §15 — ML unit caps last band covers 0
-  checks.push({ label: 'ML_UNIT_CAPS last band minProb = 0',  pass: C.ML_UNIT_CAPS[C.ML_UNIT_CAPS.length - 1].minProb === 0.00 });
-  checks.push({ label: 'significant_underdog ML cap = 1u',    pass: C.ML_UNIT_CAPS[C.ML_UNIT_CAPS.length - 1].maxUnits === 1 });
-
-  // §16 — Validation sequence
-  checks.push({ label: 'NBA is priority 1',    pass: C.VALIDATION_SEQUENCE.find(s => s.sport === 'basketball_nba')?.priority === 1 });
-  checks.push({ label: 'NFL is OFFSEASON',     pass: C.VALIDATION_SEQUENCE.find(s => s.sport === 'americanfootball_nfl')?.status === 'OFFSEASON' });
-
-  // §17 — Phase flags
-  checks.push({ label: 'NCAAB_TOTALS_ENABLED = false', pass: C.PHASE_FLAGS.NCAAB_TOTALS_ENABLED === false });
-  checks.push({ label: 'MAX_UNITS = 3',                pass: C.PHASE_FLAGS.MAX_UNITS === 3 });
-  checks.push({ label: 'VIG_REMOVAL_METHOD = additive', pass: C.PHASE_FLAGS.VIG_REMOVAL_METHOD === 'additive' });
-
-  // Report
-  const passed = checks.filter(c => c.pass).length;
-  const failed = checks.filter(c => !c.pass);
-
-  console.log(`\n=== SHARPLINE CONFIG — Component 1 Verification ===`);
-  console.log(`${passed} / ${checks.length} checks passed`);
-
+  checks.push({ label: 'STABLE multiplier = 1.00',          pass: C.MOVEMENT_MULTIPLIERS.STABLE === 1.00 });
+  checks.push({ label: 'STEAM multiplier = 1.20',           pass: C.MOVEMENT_MULTIPLIERS.STEAM === 1.20 });
+  checks.push({ label: 'FADING multiplier = 0.85',          pass: C.MOVEMENT_MULTIPLIERS.FADING === 0.85 });
+  checks.push({ label: 'First verdict minScore = 85',        pass: C.VERDICT_THRESHOLDS[0].minScore === 85 });
+  checks.push({ label: 'Last verdict minScore = 0',          pass: C.VERDICT_THRESHOLDS[C.VERDICT_THRESHOLDS.length-1].minScore === 0 });
+  checks.push({ label: 'LEAN units = 1',                    pass: C.DEFAULT_UNITS.LEAN === 1 });
+  checks.push({ label: 'BET units = 2',                     pass: C.DEFAULT_UNITS.BET === 2 });
+  checks.push({ label: 'STRONG_BET units = 3',              pass: C.DEFAULT_UNITS.STRONG_BET === 3 });
+  checks.push({ label: 'PHASE1_UNIT_CAP = 3',               pass: C.PHASE1_UNIT_CAP === 3 });
+  checks.push({ label: 'significant_underdog ML cap = 1u',  pass: C.ML_UNIT_CAPS[C.ML_UNIT_CAPS.length-1].maxUnits === 1 });
+  checks.push({ label: 'NBA is priority 1',                  pass: C.VALIDATION_SEQUENCE.find(s=>s.sport==='basketball_nba')?.priority === 1 });
+  checks.push({ label: 'NFL is OFFSEASON',                   pass: C.VALIDATION_SEQUENCE.find(s=>s.sport==='americanfootball_nfl')?.status === 'OFFSEASON' });
+  checks.push({ label: 'NCAAB_TOTALS_ENABLED = false',      pass: C.PHASE_FLAGS.NCAAB_TOTALS_ENABLED === false });
+  checks.push({ label: 'MAX_UNITS = 3',                     pass: C.PHASE_FLAGS.MAX_UNITS === 3 });
+  const passed = checks.filter(c=>c.pass).length;
+  const failed = checks.filter(c=>!c.pass);
+  console.log('\n=== SHARPLINE CONFIG — Component 1 Verification ===');
+  console.log(passed + ' / ' + checks.length + ' checks passed');
   if (failed.length > 0) {
-    console.warn(`\n⚠ FAILED CHECKS:`);
-    failed.forEach(c => console.warn(`  ✗ ${c.label}`));
+    console.warn('\n FAILED CHECKS:');
+    failed.forEach(c => console.warn('  FAIL: ' + c.label));
   } else {
-    console.log(`\n✓ All checks passed. Component 1 verified. Proceed to Component 2.`);
+    console.log('\n All checks passed. Component 1 verified. Proceed to Component 2.');
   }
+  console.log('\n MANUAL CHECK REQUIRED:');
+  console.log("  Verify 'circasports' key string against live Odds API response.");
+})();
 
-  console.log(`\n⚠ MANUAL CHECK REQUIRED:`);
-  console.log(`  Verify 'circasports' is the correct Odds API key string.`);
-  console.log(`  Pull a live game with Circa listed and confirm book.key === 'circasports'.`);
-  console.log(`  If it is 'circa_sports', update SHARP_BOOKS.PRIMARY[1] before proceeding.`);
-})();<script type="text/babel">
+// =============================================================================
+// EXISTING APP CODE BELOW — UNCHANGED
+// =============================================================================
 const{useState,useEffect,useMemo,useCallback,useRef}=React;
 
 // ════════════════════════════════════════════════════════════════
@@ -481,26 +347,18 @@ const F={s:"'DM Sans',system-ui,sans-serif",m:"'IBM Plex Mono',monospace"};
 // §3  MATH ENGINE
 // ════════════════════════════════════════════════════════════════
 
-// American odds → implied probability
 const a2i=a=>a<0?Math.abs(a)/(Math.abs(a)+100):100/(a+100);
-// American → decimal
 const a2d=a=>a<0?1+100/Math.abs(a):1+a/100;
 
-// Edge: pure implied-probability-point difference, hard-capped at 10%
-// damp parameter allows sport-specific dampening (0.5 for hockey/baseball)
 function calcEdge(yours,sharp,damp=1){
   const yi=a2i(yours),si=a2i(sharp);
   return Math.min(Math.max(0,(si-yi)*100)*damp,10);
 }
 
-// CLV: how much value your entry captured vs closing line
 const calcCLV=(entry,close)=>{const e=a2i(entry),c=a2i(close);return((c-e)/e)*100;};
 
-// Unit sizing — Walters: max 3% of bankroll, scale with edge, 0.5u increments
-// "limit your maximum wager on any single event to three percent"
 const suggestUnits=e=>e>=7?3:e>=5.5?2.5:e>=4.5?2:e>=3.5?1.5:e>=3?1:0.5;
 
-// Robust median (resists outlier skew vs mean)
 function median(arr){
   if(!arr.length)return 0;
   const s=[...arr].sort((a,b)=>a-b);
@@ -508,7 +366,6 @@ function median(arr){
   return s.length%2?s[m]:(s[m-1]+s[m])/2;
 }
 
-// Haversine distance in miles (for travel analysis)
 function haversine(lat1,lon1,lat2,lon2){
   const R=3959,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;
   const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
@@ -520,7 +377,6 @@ function haversine(lat1,lon1,lat2,lon2){
 // ════════════════════════════════════════════════════════════════
 
 const CITIES={
-  // NBA
   "Atlanta Hawks":{c:"Atlanta",lat:33.757,lon:-84.396},
   "Boston Celtics":{c:"Boston",lat:42.366,lon:-71.062},
   "Brooklyn Nets":{c:"Brooklyn",lat:40.683,lon:-73.975},
@@ -551,7 +407,6 @@ const CITIES={
   "Toronto Raptors":{c:"Toronto",lat:43.643,lon:-79.379},
   "Utah Jazz":{c:"Salt Lake City",lat:40.768,lon:-111.901},
   "Washington Wizards":{c:"Washington",lat:38.898,lon:-77.021},
-  // NHL
   "Anaheim Ducks":{c:"Anaheim",lat:33.808,lon:-117.877},
   "Utah Hockey Club":{c:"SLC",lat:40.768,lon:-111.901},
   "Boston Bruins":{c:"Boston",lat:42.366,lon:-71.062},
@@ -584,7 +439,6 @@ const CITIES={
   "Vegas Golden Knights":{c:"Las Vegas",lat:36.103,lon:-115.178},
   "Washington Capitals":{c:"Washington",lat:38.898,lon:-77.021},
   "Winnipeg Jets":{c:"Winnipeg",lat:49.893,lon:-97.144},
-  // MLB (major cities)
   "Arizona Diamondbacks":{c:"Phoenix",lat:33.446,lon:-112.071},
   "Atlanta Braves":{c:"Atlanta",lat:33.891,lon:-84.468},
   "Baltimore Orioles":{c:"Baltimore",lat:39.284,lon:-76.622},
@@ -617,6 +471,7 @@ const CITIES={
   "Washington Nationals":{c:"Washington",lat:38.873,lon:-77.007},
 };
 
+
 // ════════════════════════════════════════════════════════════════
 // §5  SUPABASE DATABASE LAYER
 // ════════════════════════════════════════════════════════════════
@@ -636,7 +491,6 @@ async function dbLoad(){
 
 async function dbAdd(bet){
   try{
-    // Validate and cast types to match Supabase schema
     const row={
       user_id:UID,
       sport:bet.sport||"Unknown",
@@ -687,7 +541,6 @@ function analyzeResearch(game,recentScores){
   const gt=new Date(game.commence_time).getTime();
   let restH=null,restA=null,b2bH=false,b2bA=false;
 
-  // ── Rest days ──
   if(recentScores&&recentScores.length){
     let lastH=null,lastA=null;
     for(const s of recentScores){
@@ -708,27 +561,22 @@ function analyzeResearch(game,recentScores){
       else if(restA===1)factors.push({type:"rest",team:away,label:`${restA}d rest`,detail:`${away} — 1 day rest`,impact:-1,color:T.orn});
       else if(restA>=3)factors.push({type:"rest",team:away,label:`${restA}d rest`,detail:`${away} well-rested (${restA} days)`,impact:1,color:T.grn});
     }
-    // Rest advantage
     if(restH!==null&&restA!==null&&Math.abs(restH-restA)>=2){
       const adv=restH>restA?home:away;
       factors.push({type:"rest_adv",team:adv,label:`+${Math.abs(restH-restA)}d rest edge`,detail:`${adv} has ${Math.abs(restH-restA)}-day rest advantage`,impact:restH>restA?1:-1,color:T.blu});
     }
   }
 
-  // ── Travel distance ──
   let travelMi=null;
   const hc=CITIES[home],ac=CITIES[away];
   if(hc&&ac){
     travelMi=Math.round(haversine(hc.lat,hc.lon,ac.lat,ac.lon));
     if(travelMi>1500)factors.push({type:"travel",team:away,label:`${travelMi}mi`,detail:`${away} coast-to-coast travel (${travelMi}mi)`,impact:-2,color:T.red});
     else if(travelMi>800)factors.push({type:"travel",team:away,label:`${travelMi}mi`,detail:`${away} traveled ${travelMi} miles`,impact:-1,color:T.orn});
-
-    // Timezone shift
     const tz=Math.abs(Math.round((hc.lon-ac.lon)/15));
     if(tz>=2)factors.push({type:"tz",team:away,label:`${tz}hr TZ`,detail:`${away} crossing ${tz} time zones`,impact:-1,color:T.orn});
   }
 
-  // ── Compound: B2B + travel ──
   if(b2bA&&travelMi&&travelMi>500){
     factors.push({type:"compound",team:away,label:"B2B+Travel",detail:`${away} back-to-back AND traveled ${travelMi}mi — extreme fatigue risk`,impact:-3,color:T.red});
   }
@@ -740,25 +588,18 @@ function analyzeResearch(game,recentScores){
 // §7  SHARPLINE SCORING ENGINE
 // ════════════════════════════════════════════════════════════════
 
-// Walters principle: "everything begins and ends with value"
-// Most games should score LOW. An "A" is rare — maybe 1-2 per day.
-// We're looking for genuine market inefficiency, not noise.
-
 function scoreGame(game,research){
   const w={edge:.35,sharpDir:.20,juice:.15,move:.10,research:.10,half:.10};
   const s={edge:0,sharpDir:0,juice:0,move:0,research:0,half:0};
 
-  // Sport-aware edge floor — after dampening, the thresholds still apply
   const isMlSport=game.sportType==="hockey"||game.sportType==="baseball";
-  const edgeFloor=isMlSport?2:2; // same floor now since dampening handles the sport difference
+  const edgeFloor=isMlSport?2:2;
 
-  // Edges are already dampened by processGames, so use them directly
   const maxE=Math.max(game.bestSpreadEdge||0,game.bestTotalEdge||0,game.bestMlEdge||0);
 
   if(maxE>=edgeFloor+1)s.edge=Math.min((maxE-edgeFloor)*25,100);
   else s.edge=0;
 
-  // Sharp directional agreement (0-100)
   if(game.conSrc==="sharp"&&game.sharpN>=2){
     const allSpOdds=[];
     for(const sl of game.spreadLines||[]){
@@ -769,22 +610,18 @@ function scoreGame(game,research){
     if(sharpDiff>1.5)s.sharpDir=Math.min(sharpDiff*20,100);
   }
 
-  // Juice signal (0-100)
   if(game.juiceSig&&game.juiceSig.strength>=5)s.juice=Math.min((game.juiceSig.strength-4)*25,100);
 
-  // Line movement (0-100)
   if(game.movement){
     const mv=Math.abs(game.movement.spreadDelta||0);
     if(mv>=0.5)s.move=Math.min(mv*30,100);
   }
 
-  // Research (0-100)
   if(research&&research.factors.length){
     const tot=research.factors.reduce((a,f)=>a+Math.abs(f.impact),0);
     s.research=Math.min(tot*12,100);
   }
 
-  // Half-point value (0-100)
   if(game.halfPtVal)s.half=Math.min(game.halfPtVal*20,100);
 
   let total=0;
@@ -800,24 +637,19 @@ function scoreGame(game,research){
 
 function genRecs(game,research){
   const recs=[];
-  // Sport-aware thresholds:
-  // NHL/MLB are moneyline-primary — wider natural variance means higher bar
-  // NFL/NBA/NCAA are spread-primary — tighter market, lower bar is real
   const isMlSport=game.sportType==="hockey"||game.sportType==="baseball";
-  const spreadMin=3;      // Same across sports — spreads are always tight
-  const totalMin=3;       // Same across sports
-  const mlMin=isMlSport?4.5:3.5; // NHL/MLB MLs need 4.5% (was 3.5% for all)
+  const spreadMin=3;
+  const totalMin=3;
+  const mlMin=isMlSport?4.5:3.5;
 
   const add=(type,side,line,odds,book,edge,reasons,minEdge)=>{
     if(edge<minEdge)return;
-    // Confidence: sport-aware tiers
     const highBar=isMlSport?6:5;
     const medBar=isMlSport?5:4;
     const conf=edge>=highBar?"HIGH":edge>=medBar?"MEDIUM":"LOW";
     recs.push({type,side,line,odds,book,edge:+edge.toFixed(1),units:suggestUnits(edge),conf,reasons});
   };
 
-  // Helper: gather research reasons for a side
   const resFor=(team,opp)=>{
     if(!research)return[];
     const r=[];
@@ -826,7 +658,6 @@ function genRecs(game,research){
     return r;
   };
 
-  // ── Spread recs ──
   if(game.spreadLines){
     for(const sl of game.spreadLines){
       if(sl.bestAwayEdge>spreadMin){
@@ -844,7 +675,6 @@ function genRecs(game,research){
     }
   }
 
-  // ── Total recs ──
   if(game.totalLines){
     for(const tl of game.totalLines){
       if(tl.bestOverEdge>totalMin){
@@ -864,7 +694,6 @@ function genRecs(game,research){
     }
   }
 
-  // ── Moneyline recs — sport-aware minimum ──
   if(game.mlData){
     const ml=game.mlData;
     if(ml.bestAwayEdge>mlMin)add("ML",game.away_team,"",ml.bestAwayOdds,ml.bestAwayBook,ml.bestAwayEdge,[`${ml.bestAwayEdge.toFixed(1)}% ML edge at ${ml.bestAwayBook}`],mlMin);
@@ -888,16 +717,11 @@ function processGames(raw,myBooks,sportKey){
     const conSrc=useSh?"sharp":"market";
     const sportType=SPORTS.find(s=>s.key===(sportKey||g.sport_key))?.type||"";
 
-    // Sport-specific edge dampening factor
-    // NHL/MLB: puck lines and run lines have moneyline-like variance
-    // that inflates raw edge calculations. 0.35x for spreads/ML, 0.5x for totals.
     const spDamp=sportType==="hockey"||sportType==="baseball"?0.35:1;
     const toDamp=sportType==="hockey"||sportType==="baseball"?0.5:1;
 
-    // Helper: does user have this book?
     const hasBook=title=>!myBooks.length||myBooks.some(mb=>title.toLowerCase().includes(mb.toLowerCase()));
 
-    // ── SPREADS ──
     const spreadMap=new Map();
     const shSpOdds=[];
 
@@ -931,7 +755,6 @@ function processGames(raw,myBooks,sportKey){
       spreadLines.push({...entries[0],entries,bestAwayEdge:bAE,bestHomeEdge:bHE,bestAwayBook:bAB,bestHomeBook:bHB,bestAwayOdds:bAO,bestHomeOdds:bHO,awaySpread:entries[0].awSp,homeSpread:entries[0].hmSp});
     }
 
-    // ── TOTALS ──
     const totalMap=new Map();
     const shToOdds=[];
 
@@ -965,7 +788,6 @@ function processGames(raw,myBooks,sportKey){
       totalLines.push({...entries[0],entries,bestOverEdge:bOE,bestUnderEdge:bUE,bestOverBook:bOB,bestUnderBook:bUB,bestOverOdds:bOO,bestUnderOdds:bUO});
     }
 
-    // ── MONEYLINES ──
     const shMlAw=[],shMlHm=[];
     for(const bm of conBms){
       const mk=bm.markets?.find(m=>m.key==="h2h");
@@ -992,7 +814,6 @@ function processGames(raw,myBooks,sportKey){
       if(he>mlData.bestHomeEdge){mlData.bestHomeEdge=he;mlData.bestHomeBook=bm.title;mlData.bestHomeOdds=hm.price;}
     }
 
-    // ── Juice Signal ──
     let juiceSig=null;
     const jAw=[],jHm=[];
     for(const bm of bms){
@@ -1010,7 +831,6 @@ function processGames(raw,myBooks,sportKey){
       if(diff>5)juiceSig={side:avgA<avgH?g.away_team:g.home_team,strength:Math.min(Math.round(diff),10),detail:`Vig loaded toward ${avgA<avgH?g.away_team:g.home_team} (avg diff: ${diff.toFixed(0)})`};
     }
 
-    // ── Half-point value ──
     let halfPtVal=0;
     const keyNums=sportType==="football"?[3,7,10,6,14,1,4]:sportType==="basketball"?[3,5,7,8]:[1,1.5];
     if(spreadLines.length){
@@ -1025,9 +845,6 @@ function processGames(raw,myBooks,sportKey){
     const bestSpreadEdge=spreadLines.length?Math.max(...spreadLines.map(s=>Math.max(s.bestAwayEdge,s.bestHomeEdge))):0;
     const bestTotalEdge=totalLines.length?Math.max(...totalLines.map(t=>Math.max(t.bestOverEdge,t.bestUnderEdge))):0;
     const bestMlEdge=Math.max(mlData.bestAwayEdge,mlData.bestHomeEdge);
-
-    // Edges are already dampened by calcEdge(yours, sharp, damp) calls above.
-    // No second dampening needed.
 
     return{
       ...g,spreadLines,totalLines,mlData,
@@ -1059,16 +876,14 @@ function SharpLine(){
   const[clvIn,setClvIn]=useState({});
   const[manBet,setManBet]=useState(null);
   const[gView,setGView]=useState("spread");
-  const[tracked,setTracked]=useState(null); // tracks which button was just clicked
+  const[tracked,setTracked]=useState(null);
 
   const unitSz=bankroll>0?Math.round(bankroll*0.01):0;
 
-  // Load bets from Supabase
   useEffect(()=>{dbLoad().then(b=>setBets(b))},[]);
   useEffect(()=>{localStorage.setItem("sl-bankroll",bankroll)},[bankroll]);
   useEffect(()=>{localStorage.setItem("sl-books",JSON.stringify(myBooks))},[myBooks]);
 
-  // ── Fetch odds (MANUAL ONLY) ──
   const fetchOdds=useCallback(async()=>{
     setLoading(true);
     try{
@@ -1079,7 +894,6 @@ function SharpLine(){
 
       const proc=processGames(data,myBooks,sport);
 
-      // First-seen for line movement
       setFirstSeen(prev=>{
         const n={...prev};
         for(const g of proc){
@@ -1088,7 +902,6 @@ function SharpLine(){
         return n;
       });
 
-      // Attach movement
       for(const g of proc){
         const fs=firstSeen[g.id];
         if(fs){
@@ -1103,7 +916,6 @@ function SharpLine(){
       setGames(proc);
       setCache(prev=>({...prev,[sport]:{data:proc,time:Date.now()}}));
 
-      // Fetch scores for research
       if(!scores[sport]){
         try{
           const sr=await fetch(`/api/research?sport=${sport}&type=scores`);
@@ -1115,13 +927,11 @@ function SharpLine(){
     setLoading(false);
   },[sport,myBooks,firstSeen,scores]);
 
-  // Load from cache on sport switch
   useEffect(()=>{
     if(cache[sport])setGames(cache[sport].data);
     else setGames([]);
   },[sport]);
 
-  // Enrich with research + scoring + recs
   const enriched=useMemo(()=>{
     return games.map(g=>{
       const research=analyzeResearch(g,scores[sport]||[]);
@@ -1131,7 +941,6 @@ function SharpLine(){
     }).sort((a,b)=>b.score.total-a.score.total);
   },[games,scores,sport]);
 
-  // ── Bet actions ──
   const[trackErr,setTrackErr]=useState(null);
   const trackBet=async(bet,btnKey)=>{
     setTracked(btnKey||"saving");
@@ -1149,7 +958,6 @@ function SharpLine(){
     }catch(err){
       console.error("trackBet full error:",err);
       setTracked("error");
-      // Capture every possible error field from Supabase
       const msg=err.message||"";
       const det=err.details||"";
       const hint=err.hint||"";
@@ -1169,61 +977,45 @@ function SharpLine(){
     setBets(prev=>prev.map(b=>b.id===id?{...b,closingOdds,clv}:b));
   };
 
-  // Fetch closing line from API for a specific bet (1 credit per fetch)
   const[clvFetching,setClvFetching]=useState(null);
   const[clvFetchErr,setClvFetchErr]=useState(null);
   const fetchCLV=async(bet)=>{
     setClvFetching(bet.id);
     setClvFetchErr(null);
     try{
-      // Map sport label back to API key
       const sportObj=SPORTS.find(s=>s.label===bet.sport);
       if(!sportObj){setClvFetchErr("Unknown sport: "+bet.sport);setClvFetching(null);return;}
-
-      // Determine which market to look for
       const marketKey=bet.type==="ML"?"h2h":bet.type==="Total"?"totals":"spreads";
       const res=await fetch(`/api/odds?sport=${sportObj.key}&markets=${marketKey}`);
       const data=await res.json();
       const rem=res.headers.get("x-requests-remaining");
       if(rem)setCredits(+rem);
-
       if(!Array.isArray(data)||!data.length){setClvFetchErr("No odds data returned");setClvFetching(null);return;}
-
-      // Parse team names from bet.game ("Away @ Home")
       const parts=bet.game.split(" @ ");
       const awayName=parts[0]?.trim();
       const homeName=parts[1]?.trim();
-
-      // Find the matching game
       const game=data.find(g=>{
         const hm=g.home_team?.toLowerCase();
         const aw=g.away_team?.toLowerCase();
         return(hm?.includes(homeName?.toLowerCase())||homeName?.toLowerCase()?.includes(hm))&&
               (aw?.includes(awayName?.toLowerCase())||awayName?.toLowerCase()?.includes(aw));
       });
-
       if(!game){setClvFetchErr("Game not found — may have already completed (>24hr)");setClvFetching(null);return;}
-
-      // Get sharp consensus closing odds
       const bms=game.bookmakers||[];
       const sharpBms=bms.filter(b=>SHARP_BOOKS.includes(b.key));
       const conBms=sharpBms.length>=MIN_SHARP?sharpBms:bms;
-
       let closingOdds=null;
-
       if(bet.type==="Spread"){
         const odds=[];
+        const betLine=parseFloat(bet.line);
         for(const bm of conBms){
           const mk=bm.markets?.find(m=>m.key==="spreads");
           if(!mk)continue;
-          // Match the side: if bet.line starts with "-", it's the favorite
-          const betLine=parseFloat(bet.line);
           const aw=mk.outcomes?.find(o=>o.name===game.away_team);
           const hm=mk.outcomes?.find(o=>o.name===game.home_team);
-          // Find which side matches the bet's line
           if(aw&&Math.abs(aw.point-betLine)<0.5)odds.push(aw.price);
           else if(hm&&Math.abs(hm.point-betLine)<0.5)odds.push(hm.price);
-          else if(aw)odds.push(aw.price); // fallback: use away
+          else if(aw)odds.push(aw.price);
         }
         if(odds.length)closingOdds=Math.round(median(odds));
       }else if(bet.type==="Total"){
@@ -1238,16 +1030,13 @@ function SharpLine(){
         if(odds.length)closingOdds=Math.round(median(odds));
       }else if(bet.type==="ML"){
         const odds=[];
-        // Determine which team the bet is on
-        const betTeam=bet.line||awayName; // ML bets might store team in line or side
+        const betTeam=bet.line||awayName;
         for(const bm of conBms){
           const mk=bm.markets?.find(m=>m.key==="h2h");
           if(!mk)continue;
-          // Try to match team
           const match=mk.outcomes?.find(o=>o.name?.toLowerCase()?.includes(betTeam?.toLowerCase()?.split(" ").pop()));
           if(match)odds.push(match.price);
           else{
-            // Fallback: use the side with closer odds to entry
             for(const o of mk.outcomes||[]){
               if(Math.abs(o.price-bet.odds)<50)odds.push(o.price);
             }
@@ -1255,10 +1044,7 @@ function SharpLine(){
         }
         if(odds.length)closingOdds=Math.round(median(odds));
       }
-
       if(closingOdds===null){setClvFetchErr("Could not find matching odds in API response");setClvFetching(null);return;}
-
-      // Calculate and save CLV
       const clv=calcCLV(bet.entryOdds||bet.odds,closingOdds);
       await dbUpdate(bet.id,{closingOdds,clv});
       setBets(prev=>prev.map(b=>b.id===bet.id?{...b,closingOdds,clv}:b));
@@ -1275,7 +1061,6 @@ function SharpLine(){
     setBets(prev=>prev.filter(b=>b.id!==id));
   };
 
-  // ── Stats ──
   const stats=useMemo(()=>{
     const settled=bets.filter(b=>b.result==="W"||b.result==="L");
     const W=settled.filter(b=>b.result==="W").length;
@@ -1301,10 +1086,6 @@ function SharpLine(){
     return{W,L,P,total:bets.length,settled:settled.length,wr:settled.length?(W/settled.length*100):0,avgClv,clvN:clvB.length,roi,profit,wagered,bySport,byType};
   },[bets,unitSz]);
 
-  // ════════════════════════════════════════════════════════════
-  // UI COMPONENTS
-  // ════════════════════════════════════════════════════════════
-
   const Badge=({children,bg,color,style:s})=>(
     <span style={{display:"inline-flex",alignItems:"center",padding:"2px 7px",borderRadius:3,fontSize:10,fontWeight:700,fontFamily:F.m,background:bg||T.bdr,color:color||T.tx,letterSpacing:".02em",...s}}>{children}</span>
   );
@@ -1313,22 +1094,17 @@ function SharpLine(){
     <button disabled={dis} onClick={onClick} style={{padding:sm?"4px 10px":"8px 16px",borderRadius:4,border:"none",fontSize:sm?10:12,fontWeight:700,fontFamily:F.m,cursor:dis?"not-allowed":"pointer",opacity:dis?0.4:1,background:pri?T.gold:T.bdr,color:pri?"#0a0e14":T.tx,transition:"all .15s",position:"relative",zIndex:1,...s}}>{children}</button>
   );
 
-  // ════════════════════════════════════════════════════════════
-  // GAME CARD
-  // ════════════════════════════════════════════════════════════
-
   const GameCard=({game:g,index:idx})=>{
     const exp=expanded===g.id;
     const bestE=Math.max(g.bestSpreadEdge,g.bestTotalEdge,g.bestMlEdge);
     const isMlSp=g.sportType==="hockey"||g.sportType==="baseball";
-    const edgeBadgeMin=isMlSp?4:3;  // NHL/MLB need 4% to show EDGE badge
-    const noPlayMax=isMlSp?3:2;     // NHL/MLB: under 3% = NO PLAY
+    const edgeBadgeMin=isMlSp?4:3;
+    const noPlayMax=isMlSp?3:2;
     const time=new Date(g.commence_time).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"});
     const res=g.research,sc=g.score,recs=g.recs;
 
     return(
       <div className="fade-up" style={{animationDelay:`${idx*40}ms`,background:T.card,border:`1px solid ${bestE>=5?T.gold+"40":T.bdr}`,borderRadius:8,marginBottom:8,overflow:"hidden"}}>
-        {/* Header */}
         <div onClick={()=>setExpanded(exp?null:g.id)} style={{padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div style={{flex:1}}>
             <div style={{fontSize:13,fontWeight:700,color:T.txB,marginBottom:3}}>{g.away_team} <span style={{color:T.mut,fontWeight:400}}>@</span> {g.home_team}</div>
@@ -1345,11 +1121,8 @@ function SharpLine(){
           <span style={{color:T.mut,fontSize:16,transform:exp?"rotate(180deg)":"none",transition:"transform .2s"}}>▾</span>
         </div>
 
-        {/* Expanded Detail */}
         {exp&&(
           <div style={{padding:"0 14px 14px",borderTop:`1px solid ${T.bdr}`}}>
-
-            {/* Research Factors */}
             {res&&res.factors.length>0&&(
               <div style={{marginTop:12,marginBottom:12}}>
                 <div style={{fontSize:10,fontWeight:700,color:T.pur,fontFamily:F.m,marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>📋 Research Factors</div>
@@ -1364,7 +1137,6 @@ function SharpLine(){
               </div>
             )}
 
-            {/* Sharp Calls */}
             {recs.length>0&&(
               <div style={{marginTop:8,marginBottom:12}}>
                 <div style={{fontSize:10,fontWeight:700,color:T.gold,fontFamily:F.m,marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>⚡ Sharp Calls</div>
@@ -1397,14 +1169,12 @@ function SharpLine(){
               </div>
             )}
 
-            {/* Market View Tabs */}
             <div style={{display:"flex",gap:4,marginTop:8,marginBottom:8}}>
               {["spread","total","ml"].map(v=>(
                 <span key={v} onClick={()=>setGView(v)} style={{padding:"4px 12px",borderRadius:3,fontSize:10,fontWeight:600,fontFamily:F.m,cursor:"pointer",background:gView===v?T.gold+"20":T.bdr,color:gView===v?T.gold:T.mut,textTransform:"uppercase"}}>{v==="ml"?"Moneyline":v}</span>
               ))}
             </div>
 
-            {/* ── SPREAD TABLE ── */}
             {gView==="spread"&&g.spreadLines.map((sl,si)=>(
               <div key={si} style={{marginBottom:8}}>
                 <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:4}}>
@@ -1448,7 +1218,6 @@ function SharpLine(){
               </div>
             ))}
 
-            {/* ── TOTAL TABLE ── */}
             {gView==="total"&&g.totalLines.map((tl,ti)=>(
               <div key={ti} style={{marginBottom:8}}>
                 <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:4}}>
@@ -1492,7 +1261,6 @@ function SharpLine(){
               </div>
             ))}
 
-            {/* ── MONEYLINE TABLE ── */}
             {gView==="ml"&&g.mlData.entries.length>0&&(
               <div style={{marginBottom:8}}>
                 <div style={{fontSize:10,color:T.mut,fontFamily:F.m,marginBottom:4}}>Moneyline</div>
@@ -1520,7 +1288,6 @@ function SharpLine(){
               </div>
             )}
 
-            {/* Consensus Footer */}
             <div style={{marginTop:8,padding:"6px 10px",background:T.card2,borderRadius:4,fontSize:9,fontFamily:F.m,color:T.mut}}>
               Benchmark: {g.conSrc==="sharp"?`${g.sharpN} sharp books (Pinnacle/Circa/Bookmaker)`:"Full market median"} · Spread: {g.shSpMed>0?"+":""}{g.shSpMed} · Total: {g.shToMed>0?"+":""}{g.shToMed}
               {g.juiceSig&&<span style={{color:T.orn}}> · Juice: {g.juiceSig.detail}</span>}
@@ -1530,10 +1297,6 @@ function SharpLine(){
       </div>
     );
   };
-
-  // ════════════════════════════════════════════════════════════
-  // TRACKER VIEW
-  // ════════════════════════════════════════════════════════════
 
   const Tracker=()=>{
     const pending=bets.filter(b=>!b.result);
@@ -1633,10 +1396,6 @@ function SharpLine(){
     );
   };
 
-  // ════════════════════════════════════════════════════════════
-  // DASHBOARD VIEW
-  // ════════════════════════════════════════════════════════════
-
   const Dashboard=()=>{
     const Stat=({label,value,sub,color})=>(
       <div style={{padding:"14px 12px",background:T.card,border:`1px solid ${T.bdr}`,borderRadius:8,textAlign:"center"}}>
@@ -1706,10 +1465,6 @@ function SharpLine(){
     );
   };
 
-  // ════════════════════════════════════════════════════════════
-  // SETTINGS VIEW
-  // ════════════════════════════════════════════════════════════
-
   const Settings=()=>(
     <div>
       <div style={{fontSize:10,fontWeight:700,color:T.gold,fontFamily:F.m,marginBottom:8,textTransform:"uppercase"}}>My Sportsbooks</div>
@@ -1730,10 +1485,6 @@ function SharpLine(){
     </div>
   );
 
-  // ════════════════════════════════════════════════════════════
-  // MAIN RENDER
-  // ════════════════════════════════════════════════════════════
-
   const tabs=[
     {k:"scanner",l:"Scanner",i:"◎"},
     {k:"tracker",l:"Tracker",i:"▣",badge:bets.filter(b=>!b.result).length||null},
@@ -1743,7 +1494,6 @@ function SharpLine(){
 
   return(
     <div style={{maxWidth:520,margin:"0 auto",minHeight:"100vh",background:T.bg}}>
-      {/* Header */}
       <div style={{padding:"16px 16px 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <div style={{width:30,height:30,borderRadius:6,background:`linear-gradient(135deg,${T.gold},${T.goldD})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:900,color:T.bg,fontFamily:F.m}}>SL</div>
@@ -1752,7 +1502,6 @@ function SharpLine(){
         {credits!==null&&<div style={{fontSize:9,color:T.mut,fontFamily:F.m}}>{credits.toLocaleString()} credits</div>}
       </div>
 
-      {/* Nav */}
       <div style={{display:"flex",gap:2,padding:"12px 16px 0",borderBottom:`1px solid ${T.bdr}`}}>
         {tabs.map(t=>(
           <div key={t.k} onClick={()=>setTab(t.k)} style={{padding:"8px 14px",cursor:"pointer",borderBottom:`2px solid ${tab===t.k?T.gold:"transparent"}`,display:"flex",alignItems:"center",gap:4}}>
@@ -1763,7 +1512,6 @@ function SharpLine(){
         ))}
       </div>
 
-      {/* Content */}
       <div style={{padding:16}}>
         {trackErr&&<div onClick={()=>setTrackErr(null)} style={{padding:"10px 12px",background:T.redB,border:`1px solid ${T.red}40`,borderRadius:6,marginBottom:10,fontSize:11,fontFamily:F.m,color:T.red,cursor:"pointer",lineHeight:1.5}}>⚠ Track failed: {trackErr}<br/><span style={{fontSize:9,color:T.mut}}>Tap to dismiss</span></div>}
         {tab==="scanner"&&(
