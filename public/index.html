@@ -2709,11 +2709,19 @@ function getConsensusSpreadNum(consensusResult, books) {
 // Finds the book with the most favourable available odds for the betSide
 // relative to the consensus. Returns the book object with highest availableVigRemoved.
 
-function findBestAvailableBook(books, betSide) {
+function findBestAvailableBook(books, betSide, consensusSpreadNum) {
+  // For spread markets: only compare books offering the same spread number
+  // as the consensus. A book at -3.5 and a book at -4.5 are different markets —
+  // comparing their vig-removed probs against a single consensus is invalid.
+  // For h2h/totals: no spread number filtering needed.
   let best = null;
   let bestProb = -Infinity;
 
   for (const book of books) {
+    // Spread number filter: skip books on a different number than consensus
+    if (consensusSpreadNum != null && book.spreadNum != null) {
+      if (Math.abs(book.spreadNum - consensusSpreadNum) >= 0.5) continue;
+    }
     try {
       const vr = vigRemoveSide(book.oddsA, book.oddsB, betSide);
       if (vr.vigRemovedProb > bestProb) {
@@ -2722,6 +2730,20 @@ function findBestAvailableBook(books, betSide) {
       }
     } catch (e) {
       // Skip books with invalid odds
+    }
+  }
+
+  // Fallback: if no book matched the consensus number, use all books
+  // (protects against a case where no book matches — better than returning null)
+  if (!best) {
+    for (const book of books) {
+      try {
+        const vr = vigRemoveSide(book.oddsA, book.oddsB, betSide);
+        if (vr.vigRemovedProb > bestProb) {
+          bestProb = vr.vigRemovedProb;
+          best = { ...book, vigRemovedProb: vr.vigRemovedProb };
+        }
+      } catch (e) {}
     }
   }
   return best;
@@ -2804,19 +2826,20 @@ async function buildRecommendationCard(game, sport, betSide, marketKey, options 
   }
 
   // ── Find best available book ───────────────────────────────────────────────
-  const availableBook = options.availableBookKey
-    ? books.find(b => b.key === options.availableBookKey) || findBestAvailableBook(books, betSide)
-    : findBestAvailableBook(books, betSide);
-
-  if (!availableBook) {
-    return buildNoPlayCard(game, sport, betSide, marketKey, evaluatedAt, consensusResult, 'No valid available book odds.');
-  }
-
-  // Determine spread/total numbers for gate checks
+  // Determine spread/total numbers BEFORE selecting best available book —
+  // findBestAvailableBook needs consensusSpreadNum to filter same-number books only.
   const consensusTotalNum  = marketKey === 'totals'
     ? getConsensusTotalNum(books) : null;
   const consensusSpreadNum = ['spreads', 'puck_line', 'run_line'].includes(marketKey)
     ? getConsensusSpreadNum(consensusResult, books) : null;
+
+  const availableBook = options.availableBookKey
+    ? books.find(b => b.key === options.availableBookKey) || findBestAvailableBook(books, betSide, consensusSpreadNum)
+    : findBestAvailableBook(books, betSide, consensusSpreadNum);
+
+  if (!availableBook) {
+    return buildNoPlayCard(game, sport, betSide, marketKey, evaluatedAt, consensusResult, 'No valid available book odds.');
+  }
   const spreadNumber = availableBook.spreadNum != null ? availableBook.spreadNum : null;
 
   // ── C4: Edge Calculation ───────────────────────────────────────────────────
