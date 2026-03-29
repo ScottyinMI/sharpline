@@ -677,7 +677,7 @@ function buildSharpConsensus(books, betSide, market, sport) {
     if (allProbs.length >= 3) {
       const marketMedian = _slMedian(allProbs);
       const deviation = Math.abs(sharpBookProbs[0] - marketMedian);
-      if (deviation > 0.25) {
+      if (deviation > 0.12) {
         // Sharp book is stale or pricing a different market — fall back
         console.warn('[buildSharpConsensus] SINGLE_SHARP stale line detected:',
           'sharp=' + sharpBookProbs[0].toFixed(3),
@@ -710,6 +710,40 @@ function buildSharpConsensus(books, betSide, market, sport) {
             } catch(e) {}
           }
         }
+      }
+    }
+  }
+
+  // ── STEP 3c: Market fragmentation gate ──────────────────────────────────────
+  // If the full market spread (max - min vig-removed prob across all books) > 0.20,
+  // the market is unsettled, fragmented, or contains alt-lines at different numbers.
+  // Example: BetRivers -127 (0.517) and Circa +380 (0.198) on the same game = 0.319 spread.
+  // No sharp consensus is reliable when the market hasn't agreed on a price.
+  // Return NO_DATA to cause the engine to produce NO_PLAY for this market.
+  {
+    const allBookProbs = [];
+    for (const book of books) {
+      try {
+        allBookProbs.push(vigRemoveSide(book.oddsA, book.oddsB, betSide).vigRemovedProb);
+      } catch(e) {}
+    }
+    if (allBookProbs.length >= 3) {
+      const mktSpread = Math.max(...allBookProbs) - Math.min(...allBookProbs);
+      if (mktSpread > 0.20) {
+        return {
+          consensusProb:       null,
+          consensusTier:       'NO_DATA',
+          consensusConfidence: 0.00,
+          sharpBooksUsed:      [],
+          sharpBookProbs:      [],
+          bookCount:           books.length,
+          sharpBookCount:      primarySharp.length,
+          secondaryBookCount:  secondary.length,
+          singleSideFlag:      true,
+          betSide, market, sport,
+          reason: 'Market fragmented — book spread ' + (mktSpread * 100).toFixed(1) + '% (max 20%)',
+          evaluatedAt: new Date().toISOString(),
+        };
       }
     }
   }
@@ -1118,7 +1152,7 @@ function calculateEdge(
   // feed error, or the consensus downgraded after a stale sharp line was
   // detected). Real sharp vs retail disagreements are 2–8%. 20%+ is noise.
   // This gate fires AFTER dampening would reduce it, so we use raw edge.
-  if (Math.abs(rawEdge) > 0.20) {
+  if (Math.abs(rawEdge) > 0.15) {
     return noPlay('Market inconsistency — available book and consensus diverge by ' +
       (rawEdge * 100).toFixed(1) + '%. Likely stale line or data mismatch.', {
       rawEdge,
