@@ -29,7 +29,406 @@
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel">
+// =============================================================================
+// SHARPLINE ENGINE — COMPONENT 1: CONFIGURATION
+// =============================================================================
+// Source of truth for all engine constants. Every component reads from here.
+// No magic numbers in engine logic. Changes require documented revision.
+// Version 1.0 | Phase 1 | Locked per Phase 1 Engine Decisions v1.0
+// =============================================================================
+
+const SHARPLINE_CONFIG = {
+
+  // ── §1 SHARP_BOOKS ──────────────────────────────────────────────────────────
+  // Exact key strings returned by The Odds API (book.key in API responses).
+  // VERIFY these strings against a live Odds API response before first use.
+  // The API may return 'circasports' or 'circa_sports' — confirm exact format.
+  SHARP_BOOKS: {
+    PRIMARY: [
+      'pinnacle',      // Primary sharp benchmark — tightest lines, highest limits
+      'circasports',   // Primary sharp benchmark — confirm key string vs live API
+      'bookmaker',     // Primary sharp benchmark
+    ],
+    SECONDARY: [
+      'draftkings',    // Sharp-leaning retail — fallback consensus only, never primary anchor
+      'fanduel',       // Sharp-leaning retail — fallback consensus only, never primary anchor
+    ],
+  },
+
+  // ── §2 CONSENSUS_TIERS ──────────────────────────────────────────────────────
+  // Tier labels and confidence weights. Confidence feeds Component 6 scoring
+  // (confidence component max = 20 pts). SHARP_CONSENSUS at 1.00 → 20 pts.
+  // FULL_MARKET_MEDIAN at 0.40 → 8 pts.
+  CONSENSUS_TIERS: {
+    SHARP_CONSENSUS:    { label: 'SHARP_CONSENSUS',    confidence: 1.00 }, // 2+ primary sharp books
+    SINGLE_SHARP:       { label: 'SINGLE_SHARP',       confidence: 0.70 }, // exactly 1 primary sharp book
+    MARKET_MEDIAN:      { label: 'MARKET_MEDIAN',      confidence: 0.60 }, // secondary books (DK/FD) only
+    FULL_MARKET_MEDIAN: { label: 'FULL_MARKET_MEDIAN', confidence: 0.40 }, // retail books only
+    NO_DATA:            { label: 'NO_DATA',            confidence: 0.00 }, // fewer than MIN_BOOKS_REQUIRED
+  },
+
+  // Minimum total books required before any consensus is attempted.
+  // Fewer than 3 total books → NO_DATA immediately. No edge computed.
+  MIN_BOOKS_REQUIRED: 3,
+
+  // ── §3 SPORTS ───────────────────────────────────────────────────────────────
+  // Canonical sport keys matching The Odds API sport_key values exactly.
+  // Used as lookup keys throughout the config and engine.
+  SPORTS: {
+    NFL:   'americanfootball_nfl',
+    NCAAF: 'americanfootball_ncaaf',
+    NBA:   'basketball_nba',
+    NCAAB: 'basketball_ncaab',
+    MLB:   'baseball_mlb',
+    NHL:   'icehockey_nhl',
+  },
+
+  // ── §4 MARKETS ──────────────────────────────────────────────────────────────
+  // Canonical market type identifiers. Matches Odds API market naming.
+  MARKETS: {
+    SPREAD:    'spreads',
+    TOTAL:     'totals',
+    MONEYLINE: 'h2h',
+    PUCK_LINE: 'puck_line',
+    RUN_LINE:  'run_line',
+  },
+
+  // ── §5 MIN_EDGE_THRESHOLDS ──────────────────────────────────────────────────
+  // Minimum DAMPENED edge required to enter scoring. Keyed by sport then market.
+  // CRITICAL: Dampening is applied FIRST. This threshold check comes SECOND.
+  // Example: 3% raw NHL puck line edge × 0.60 dampener = 1.8% dampened edge
+  //          → below the 3.0% NHL threshold → NO PLAY.
+  // All values are decimal fractions (0.030 = 3.0%).
+  // null = market not evaluated in Phase 1 (silent skip, no NO PLAY flag).
+  // h2h (moneyline) thresholds are null here — MLs use ML_EDGE_THRESHOLDS (§6).
+  MIN_EDGE_THRESHOLDS: {
+    americanfootball_nfl: {
+      spreads: { sharp: 0.025, market_median: 0.040 },
+      totals:  { sharp: 0.025, market_median: 0.040 },
+      h2h:     null, // MLs → ML_EDGE_THRESHOLDS
+    },
+    americanfootball_ncaaf: {
+      spreads: { sharp: 0.025, market_median: 0.040 },
+      totals:  { sharp: 0.025, market_median: 0.040 },
+      h2h:     null,
+    },
+    basketball_nba: {
+      spreads: { sharp: 0.030, market_median: 0.050 },
+      totals:  { sharp: 0.030, market_median: 0.050 },
+      h2h:     null,
+    },
+    basketball_ncaab: {
+      spreads: { sharp: 0.035, market_median: 0.055 },
+      totals:  null,  // DEFERRED — NCAAB totals not evaluated in Phase 1
+      h2h:     null,
+    },
+    baseball_mlb: {
+      spreads: { sharp: 0.030, market_median: 0.050 }, // run line
+      totals:  { sharp: 0.030, market_median: 0.050 },
+      h2h:     null,
+    },
+    icehockey_nhl: {
+      spreads: { sharp: 0.030, market_median: 0.050 }, // puck line
+      totals:  { sharp: 0.030, market_median: 0.050 },
+      h2h:     null,
+    },
+  },
+
+  // ── §6 ML_EDGE_THRESHOLDS ───────────────────────────────────────────────────
+  // Moneyline thresholds are probability-band based, not sport-based.
+  // Evaluated top-down with find(). First match where available_vig_removed >= minProb wins.
+  // Array is ordered from highest probability to lowest.
+  // Example: +160 ML (implied prob ~38%) → slight_underdog band → needs 3.5% dampened edge.
+  ML_EDGE_THRESHOLDS: [
+    { minProb: 0.60, label: 'heavy_favorite',       sharp: 0.035, market_median: 0.055 },
+    { minProb: 0.45, label: 'slight_favorite',      sharp: 0.030, market_median: 0.050 },
+    { minProb: 0.35, label: 'slight_underdog',      sharp: 0.035, market_median: 0.055 },
+    { minProb: 0.00, label: 'significant_underdog', sharp: 0.045, market_median: 0.070 },
+  ],
+
+  // ── §7 SPREAD_DAMPENERS ─────────────────────────────────────────────────────
+  // Applied to raw edge for SPREAD, PUCK_LINE, and RUN_LINE markets only.
+  // Moneylines use ML_VARIANCE_DAMPENERS (§8) instead.
+  // NFL is the baseline at 1.00x. Hockey/baseball run/puck lines trade at
+  // extreme juice differentials that inflate raw edge — 0.60x corrects for this.
+  SPREAD_DAMPENERS: {
+    americanfootball_nfl:   1.00, // Baseline — no dampening
+    americanfootball_ncaaf: 1.00,
+    basketball_nba:         0.80,
+    basketball_ncaab:       0.75,
+    baseball_mlb:           0.60, // Run line — high juice variance
+    icehockey_nhl:          0.60, // Puck line — high juice variance
+  },
+
+  // ── §8 ML_VARIANCE_DAMPENERS ────────────────────────────────────────────────
+  // Calibrates ML edge to its practical value before scoring.
+  // A +160 ML with 6% raw edge is NOT equivalent to a -110 spread with 6% edge.
+  // Plus-money bets require far more bets to distinguish edge from variance.
+  // Evaluated top-down with find(). Same pattern as §6.
+  ML_VARIANCE_DAMPENERS: [
+    { minProb: 0.60, label: 'heavy_favorite',       factor: 0.85 },
+    { minProb: 0.45, label: 'slight_favorite',      factor: 0.75 },
+    { minProb: 0.35, label: 'slight_underdog',       factor: 0.65 },
+    { minProb: 0.00, label: 'significant_underdog',  factor: 0.50 },
+  ],
+
+  // ── §9 KEY_NUMBERS ──────────────────────────────────────────────────────────
+  // Key spread numbers by sport. Bonus fires only when ALL THREE conditions are met:
+  //   1. Market is SPREAD
+  //   2. Spread sits on a key number from this table
+  //   3. Available line is a half-point BETTER than sharp consensus
+  // Football: +10 (concentrated margin distributions — 3 at 14.8%, 7 at 9.89%)
+  // Basketball: +5 (soft signal — diffuse distribution, no dominant cliff)
+  // MLB/NHL: null (run/puck lines fixed at ±1.5 — key number logic doesn't apply)
+  KEY_NUMBERS: {
+    americanfootball_nfl: {
+      numbers: [3, 7, 10, 14],
+      bonus:   10,
+      note:    'Primary market. 3 (14.8%) and 7 (9.89%) dominate NFL margins.',
+    },
+    americanfootball_ncaaf: {
+      numbers: [3, 7, 10, 14, 17, 21],
+      bonus:   10,
+      note:    'Wider tail than NFL. 17 and 21 appear frequently in NCAAF margins.',
+    },
+    basketball_nba: {
+      numbers: [3, 5, 7],
+      bonus:   5, // Soft signal — half the football bonus
+      note:    'Diffuse distribution across 2-10. No single dominant cliff.',
+    },
+    basketball_ncaab: {
+      numbers: [3, 5, 7],
+      bonus:   5,
+      note:    'Similar to NBA. Mild clustering, no dominant margin.',
+    },
+    baseball_mlb:  null, // No key numbers — run line fixed at ±1.5
+    icehockey_nhl: null, // No key numbers — puck line fixed at ±1.5
+  },
+
+  // ── §10 SCORING ─────────────────────────────────────────────────────────────
+  // Score component limits and the edge scaling ceiling.
+  // EDGE_CEILING = 0.07: a dampened edge of (min_threshold + 7%) earns max 40 pts.
+  // Formula: edge_points = min(40, ((dampened_edge - min_threshold) / 0.07) * 40)
+  // KEY_NUMBER_BONUS is null here — sourced from KEY_NUMBERS[sport].bonus at runtime
+  // to prevent accidentally applying the football +10 bonus to basketball (+5).
+  SCORING: {
+    EDGE_CEILING:             0.07,  // threshold + 7% = 40 pts (locked Phase 1)
+    EDGE_MAX_POINTS:          40,
+    CONFIDENCE_MAX_POINTS:    20,
+    MOVEMENT_MAX_POINTS:      15,    // applied as ±15 clamp on movement delta
+    KEY_NUMBER_BONUS:         null,  // sourced from KEY_NUMBERS[sport].bonus — do not hardcode here
+    SHARP_DIVERGENCE_PENALTY: -10,
+    ML_VARIANCE_PENALTY:      -5,    // fires only when ML implied prob < 0.35
+    SCORE_MIN:                0,
+    SCORE_MAX:                100,
+  },
+
+  // ── §11 SHARP_DIVERGENCE_THRESHOLD ─────────────────────────────────────────
+  // Requires all 3 primary sharp books present. Measures max minus min of their
+  // vig-removed implied probabilities. Gap > 3% → SHARP_DIVERGENCE flag + -10 pts.
+  // Penalty fires after base scoring and movement modifier, before final clamp.
+  SHARP_DIVERGENCE_THRESHOLD: 0.03, // 3% gap triggers SHARP_DIVERGENCE flag and -10 pt penalty
+
+  // ── §12 MOVEMENT_MULTIPLIERS ────────────────────────────────────────────────
+  // Applied to (edge_points + confidence_points) base score as a multiplier.
+  // The resulting delta is clamped to ±15 before being added to the score.
+  // This prevents double-counting: edge is already calculated against current
+  // sharp consensus, so movement modifies confidence rather than inflating edge.
+  MOVEMENT_MULTIPLIERS: {
+    STABLE:     1.00, // < 1% implied prob shift — no confirmation, no concern
+    CONFIRMING: 1.10, // Consensus moved toward bet direction
+    FADING:     0.85, // Consensus moved away from bet direction
+    STEAM:      1.20, // Confirming move > 3% — possible sharp action
+    REVERSE:    1.30, // Public on one side, line moves other way — strong sharp signal (Phase 2)
+  },
+
+  // Thresholds for movement label classification
+  MOVEMENT_THRESHOLD: 0.01, // 1% minimum shift to classify as non-STABLE
+  STEAM_THRESHOLD:    0.03, // 3% confirming move to classify as STEAM
+
+  // ── §13 VERDICT_THRESHOLDS ──────────────────────────────────────────────────
+  // Maps 0-100 score to a verdict label.
+  // Evaluated top-down with find(). First match where score >= minScore wins.
+  // NO PLAY is the default — most games will land here. That is correct behavior.
+  VERDICT_THRESHOLDS: [
+    { minScore: 85, verdict: 'STRONG_BET', label: 'STRONG BET' },
+    { minScore: 75, verdict: 'STRONG_BET', label: 'STRONG BET' }, // both 75+ and 85+ are STRONG BET
+    { minScore: 65, verdict: 'BET',        label: 'BET'         },
+    { minScore: 55, verdict: 'LEAN',       label: 'LEAN'        },
+    { minScore: 40, verdict: 'WATCH',      label: 'WATCH'       },
+    { minScore:  0, verdict: 'NO_PLAY',    label: 'NO PLAY'     },
+  ],
+
+  // ── §14 DEFAULT_UNITS ────────────────────────────────────────────────────────
+  // Base unit recommendation by verdict, before ML band cap (§15) is applied.
+  // If ML band cap is lower than verdict units, the cap wins.
+  // Phase 1 hard ceiling: 3u. 4u and 5u unlock in Phase 2 after CLV validation.
+  DEFAULT_UNITS: {
+    NO_PLAY:    0,
+    WATCH:      0,
+    LEAN:       1,
+    BET:        2,
+    STRONG_BET: 3,
+  },
+
+  PHASE1_UNIT_CAP: 3, // Hard ceiling — 4u/5u unlock in Phase 2 after CLV validation
+
+  // ── §15 ML_UNIT_CAPS ─────────────────────────────────────────────────────────
+  // Maximum units for moneyline bets by implied probability band.
+  // Applied AFTER verdict unit assignment. If band cap < verdict units, use cap.
+  // This is bankroll discipline, not a penalty on edge quality.
+  // A genuine +200 ML edge is still a good bet — but plus-money bets have high
+  // variance and warrant smaller units regardless of how well they score.
+  // Evaluated top-down with find(). Same pattern as §6 and §8.
+  ML_UNIT_CAPS: [
+    { minProb: 0.60, label: 'heavy_favorite',       maxUnits: 3 },
+    { minProb: 0.45, label: 'slight_favorite',      maxUnits: 3 },
+    { minProb: 0.35, label: 'slight_underdog',      maxUnits: 2 },
+    { minProb: 0.00, label: 'significant_underdog', maxUnits: 1 },
+  ],
+
+  // ── §16 VALIDATION_SEQUENCE ──────────────────────────────────────────────────
+  // Controls scanner visibility for beta users. All constants are coded for all
+  // sports from day one. A sport becomes visible only after passing all 9 steps
+  // of the Component 11 End-to-End Verification Checklist.
+  // Phase 1 live verification scope: NBA, MLB, NHL only (confirmed).
+  // NFL, NCAAF, NCAAB constants are built and ready but not live-verified yet.
+  VALIDATION_SEQUENCE: [
+    { sport: 'basketball_nba',         priority: 1, status: 'VALIDATE_FIRST'  },
+    { sport: 'baseball_mlb',           priority: 2, status: 'VALIDATE_SECOND' },
+    { sport: 'icehockey_nhl',          priority: 3, status: 'PENDING'         },
+    { sport: 'basketball_ncaab',       priority: 4, status: 'PENDING'         },
+    { sport: 'americanfootball_nfl',   priority: 5, status: 'OFFSEASON'       },
+    { sport: 'americanfootball_ncaaf', priority: 6, status: 'OFFSEASON'       },
+  ],
+
+  // ── §17 PHASE_FLAGS ──────────────────────────────────────────────────────────
+  // Feature flags separating Phase 1 from future phases.
+  // Toggling any flag requires a documented revision to Phase 1 Engine Decisions.
+  // These flags make every Phase 1 constraint a one-line config change in Phase 2
+  // rather than a hunt through engine logic.
+  PHASE_FLAGS: {
+    NCAAB_TOTALS_ENABLED:        false,               // Deferred to Phase 2
+    MAX_UNITS:                   3,                   // Raises to 5 in Phase 2 after CLV validation
+    KEY_NUMBER_WEIGHT_VALIDATED: false,               // Basketball +5 bonus reviewed in Phase 2 with CLV data
+    ML_DAMPENER_METHOD:          'probability_band',  // vs 'sport_based' — permanent for Phase 1
+    VIG_REMOVAL_METHOD:          'additive',          // vs 'multiplicative' — revisit Phase 2
+    LINE_MOVEMENT_SOURCE:        'first_pull_snapshot', // vs 'action_network' — Phase 2 option
+  },
+
+}; // end SHARPLINE_CONFIG
+
+// =============================================================================
+// COMPONENT 1 VERIFICATION
+// Run this block in the browser console after pasting SHARPLINE_CONFIG above.
+// All checks should log true. Any false is a config error.
+// =============================================================================
+
+(function verifyComponent1() {
+  const C = SHARPLINE_CONFIG;
+  const checks = [];
+
+  // §1 — Sharp book arrays exist and have correct lengths
+  checks.push({ label: 'PRIMARY has 3 sharp books', pass: C.SHARP_BOOKS.PRIMARY.length === 3 });
+  checks.push({ label: 'SECONDARY has 2 books',     pass: C.SHARP_BOOKS.SECONDARY.length === 2 });
+  checks.push({ label: 'pinnacle in PRIMARY',        pass: C.SHARP_BOOKS.PRIMARY.includes('pinnacle') });
+
+  // §2 — Confidence weights in valid range
+  checks.push({ label: 'SHARP_CONSENSUS confidence = 1.00', pass: C.CONSENSUS_TIERS.SHARP_CONSENSUS.confidence === 1.00 });
+  checks.push({ label: 'SINGLE_SHARP confidence = 0.70',    pass: C.CONSENSUS_TIERS.SINGLE_SHARP.confidence === 0.70 });
+  checks.push({ label: 'NO_DATA confidence = 0.00',         pass: C.CONSENSUS_TIERS.NO_DATA.confidence === 0.00 });
+  checks.push({ label: 'MIN_BOOKS_REQUIRED = 3',            pass: C.MIN_BOOKS_REQUIRED === 3 });
+
+  // §5 — NCAAB totals is null (deferred)
+  checks.push({ label: 'NCAAB totals = null (deferred)',  pass: C.MIN_EDGE_THRESHOLDS.basketball_ncaab.totals === null });
+  // §5 — All h2h thresholds are null (MLs use §6)
+  const sports = Object.keys(C.MIN_EDGE_THRESHOLDS);
+  const allH2HNull = sports.every(s => C.MIN_EDGE_THRESHOLDS[s].h2h === null);
+  checks.push({ label: 'All h2h thresholds null (use §6)', pass: allH2HNull });
+
+  // §6 — ML threshold bands cover 0.00 to 1.00 (last entry minProb = 0.00)
+  checks.push({ label: 'ML_EDGE_THRESHOLDS last band minProb = 0', pass: C.ML_EDGE_THRESHOLDS[C.ML_EDGE_THRESHOLDS.length - 1].minProb === 0.00 });
+
+  // §7 — NFL spread dampener = 1.00 (baseline)
+  checks.push({ label: 'NFL spread dampener = 1.00 (baseline)', pass: C.SPREAD_DAMPENERS.americanfootball_nfl === 1.00 });
+  // §7 — NHL/MLB dampeners = 0.60
+  checks.push({ label: 'NHL puck line dampener = 0.60', pass: C.SPREAD_DAMPENERS.icehockey_nhl === 0.60 });
+  checks.push({ label: 'MLB run line dampener = 0.60',  pass: C.SPREAD_DAMPENERS.baseball_mlb === 0.60 });
+
+  // §8 — ML variance dampeners cover full probability range
+  checks.push({ label: 'ML_VARIANCE_DAMPENERS last band minProb = 0', pass: C.ML_VARIANCE_DAMPENERS[C.ML_VARIANCE_DAMPENERS.length - 1].minProb === 0.00 });
+
+  // §9 — Key numbers
+  checks.push({ label: 'NFL key numbers include 3 and 7',   pass: C.KEY_NUMBERS.americanfootball_nfl.numbers.includes(3) && C.KEY_NUMBERS.americanfootball_nfl.numbers.includes(7) });
+  checks.push({ label: 'NFL key number bonus = 10',         pass: C.KEY_NUMBERS.americanfootball_nfl.bonus === 10 });
+  checks.push({ label: 'NBA key number bonus = 5',          pass: C.KEY_NUMBERS.basketball_nba.bonus === 5 });
+  checks.push({ label: 'MLB key numbers = null',            pass: C.KEY_NUMBERS.baseball_mlb === null });
+  checks.push({ label: 'NHL key numbers = null',            pass: C.KEY_NUMBERS.icehockey_nhl === null });
+
+  // §10 — Scoring ceilings and penalties
+  checks.push({ label: 'EDGE_CEILING = 0.07',              pass: C.SCORING.EDGE_CEILING === 0.07 });
+  checks.push({ label: 'EDGE_MAX_POINTS = 40',             pass: C.SCORING.EDGE_MAX_POINTS === 40 });
+  checks.push({ label: 'CONFIDENCE_MAX_POINTS = 20',       pass: C.SCORING.CONFIDENCE_MAX_POINTS === 20 });
+  checks.push({ label: 'MOVEMENT_MAX_POINTS = 15',         pass: C.SCORING.MOVEMENT_MAX_POINTS === 15 });
+  checks.push({ label: 'SHARP_DIVERGENCE_PENALTY = -10',   pass: C.SCORING.SHARP_DIVERGENCE_PENALTY === -10 });
+  checks.push({ label: 'ML_VARIANCE_PENALTY = -5',         pass: C.SCORING.ML_VARIANCE_PENALTY === -5 });
+  checks.push({ label: 'SCORE_MIN = 0',                    pass: C.SCORING.SCORE_MIN === 0 });
+  checks.push({ label: 'SCORE_MAX = 100',                  pass: C.SCORING.SCORE_MAX === 100 });
+  checks.push({ label: 'KEY_NUMBER_BONUS is null in SCORING', pass: C.SCORING.KEY_NUMBER_BONUS === null });
+
+  // §11 — Sharp divergence threshold
+  checks.push({ label: 'SHARP_DIVERGENCE_THRESHOLD = 0.03', pass: C.SHARP_DIVERGENCE_THRESHOLD === 0.03 });
+
+  // §12 — Movement multipliers
+  checks.push({ label: 'STABLE multiplier = 1.00',     pass: C.MOVEMENT_MULTIPLIERS.STABLE === 1.00 });
+  checks.push({ label: 'STEAM multiplier = 1.20',      pass: C.MOVEMENT_MULTIPLIERS.STEAM === 1.20 });
+  checks.push({ label: 'FADING multiplier = 0.85',     pass: C.MOVEMENT_MULTIPLIERS.FADING === 0.85 });
+  checks.push({ label: 'MOVEMENT_THRESHOLD = 0.01',    pass: C.MOVEMENT_THRESHOLD === 0.01 });
+  checks.push({ label: 'STEAM_THRESHOLD = 0.03',       pass: C.STEAM_THRESHOLD === 0.03 });
+
+  // §13 — Verdict thresholds top-down order
+  checks.push({ label: 'First verdict threshold = 85 (STRONG BET)', pass: C.VERDICT_THRESHOLDS[0].minScore === 85 });
+  checks.push({ label: 'Last verdict threshold = 0 (NO PLAY)',      pass: C.VERDICT_THRESHOLDS[C.VERDICT_THRESHOLDS.length - 1].minScore === 0 });
+
+  // §14 — Unit assignments
+  checks.push({ label: 'NO_PLAY units = 0',    pass: C.DEFAULT_UNITS.NO_PLAY === 0 });
+  checks.push({ label: 'LEAN units = 1',       pass: C.DEFAULT_UNITS.LEAN === 1 });
+  checks.push({ label: 'BET units = 2',        pass: C.DEFAULT_UNITS.BET === 2 });
+  checks.push({ label: 'STRONG_BET units = 3', pass: C.DEFAULT_UNITS.STRONG_BET === 3 });
+  checks.push({ label: 'PHASE1_UNIT_CAP = 3',  pass: C.PHASE1_UNIT_CAP === 3 });
+
+  // §15 — ML unit caps last band covers 0
+  checks.push({ label: 'ML_UNIT_CAPS last band minProb = 0',  pass: C.ML_UNIT_CAPS[C.ML_UNIT_CAPS.length - 1].minProb === 0.00 });
+  checks.push({ label: 'significant_underdog ML cap = 1u',    pass: C.ML_UNIT_CAPS[C.ML_UNIT_CAPS.length - 1].maxUnits === 1 });
+
+  // §16 — Validation sequence
+  checks.push({ label: 'NBA is priority 1',    pass: C.VALIDATION_SEQUENCE.find(s => s.sport === 'basketball_nba')?.priority === 1 });
+  checks.push({ label: 'NFL is OFFSEASON',     pass: C.VALIDATION_SEQUENCE.find(s => s.sport === 'americanfootball_nfl')?.status === 'OFFSEASON' });
+
+  // §17 — Phase flags
+  checks.push({ label: 'NCAAB_TOTALS_ENABLED = false', pass: C.PHASE_FLAGS.NCAAB_TOTALS_ENABLED === false });
+  checks.push({ label: 'MAX_UNITS = 3',                pass: C.PHASE_FLAGS.MAX_UNITS === 3 });
+  checks.push({ label: 'VIG_REMOVAL_METHOD = additive', pass: C.PHASE_FLAGS.VIG_REMOVAL_METHOD === 'additive' });
+
+  // Report
+  const passed = checks.filter(c => c.pass).length;
+  const failed = checks.filter(c => !c.pass);
+
+  console.log(`\n=== SHARPLINE CONFIG — Component 1 Verification ===`);
+  console.log(`${passed} / ${checks.length} checks passed`);
+
+  if (failed.length > 0) {
+    console.warn(`\n⚠ FAILED CHECKS:`);
+    failed.forEach(c => console.warn(`  ✗ ${c.label}`));
+  } else {
+    console.log(`\n✓ All checks passed. Component 1 verified. Proceed to Component 2.`);
+  }
+
+  console.log(`\n⚠ MANUAL CHECK REQUIRED:`);
+  console.log(`  Verify 'circasports' is the correct Odds API key string.`);
+  console.log(`  Pull a live game with Circa listed and confirm book.key === 'circasports'.`);
+  console.log(`  If it is 'circa_sports', update SHARP_BOOKS.PRIMARY[1] before proceeding.`);
+})();<script type="text/babel">
 const{useState,useEffect,useMemo,useCallback,useRef}=React;
 
 // ════════════════════════════════════════════════════════════════
