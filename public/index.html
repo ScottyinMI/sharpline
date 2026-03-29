@@ -2163,6 +2163,374 @@ function scoreEngine(edgeResult, consensusResult, movementResult, marketType, sp
 
 
 // =============================================================================
+// SHARPLINE ENGINE — COMPONENT 7: VERDICT & UNIT SIZING
+// =============================================================================
+// Final decision layer. Takes the 0–100 score from Component 6, applies a
+// deterministic lookup to produce a verdict label and unit recommendation,
+// then applies the ML band unit cap if applicable. Also builds the human-
+// readable notes string that the recommendation card displays.
+//
+// This component does not compute or derive. It looks up. All complexity
+// belongs in the upstream components that produced the score.
+//
+// Dependencies: SHARPLINE_CONFIG (C1), scoreResult (C6), edgeResult (C4),
+//               consensusResult (C3), movementResult (C5)
+// Version 1.0 | Phase 1
+// =============================================================================
+
+// ── buildCapReason(mlCap, originalUnits, finalUnits) ────────────────────────
+// Builds a human-readable explanation when the ML band cap reduces units.
+// Only called when unitsCapped = true (cap actually changed the unit count).
+
+function buildCapReason(mlCap, originalUnits, finalUnits) {
+  return (
+    'ML ' + mlCap.label.replace(/_/g, ' ') + ' band: ' +
+    originalUnits + 'u reduced to ' + finalUnits + 'u ' +
+    '(max ' + mlCap.maxUnits + 'u for ' + Math.round(mlCap.minProb * 100) + '%+ implied probability).'
+  );
+}
+
+// ── buildNotes(verdict, score, edgeResult, consensusResult, ...) ─────────────
+// Assembles a plain-English summary of the engine's reasoning. Display only —
+// never used for scoring logic. Shown in the expandable card section.
+
+function buildNotes(verdict, score, edgeResult, consensusResult, movementResult, flags) {
+  const parts = [];
+
+  // Consensus tier and books used
+  const tierLabel  = consensusResult.consensusTier
+    ? consensusResult.consensusTier.replace(/_/g, ' ')
+    : 'UNKNOWN';
+  const booksLabel = consensusResult.sharpBooksUsed && consensusResult.sharpBooksUsed.length > 0
+    ? consensusResult.sharpBooksUsed.join(', ')
+    : 'market books';
+  parts.push('Consensus: ' + tierLabel + ' (' + booksLabel + ')');
+
+  // Edge
+  if (edgeResult && edgeResult.dampenedEdge != null) {
+    const edgePct      = (edgeResult.dampenedEdge * 100).toFixed(1);
+    const thresholdPct = edgeResult.minThreshold != null
+      ? (edgeResult.minThreshold * 100).toFixed(1)
+      : '—';
+    parts.push('Edge: ' + edgePct + '% dampened (threshold: ' + thresholdPct + '%)');
+  }
+
+  // Movement
+  if (movementResult && movementResult.movementLabel) {
+    const movNote = movementResult.isFirstPull
+      ? movementResult.movementLabel + ' (baseline established this scan)'
+      : movementResult.movementLabel;
+    parts.push('Movement: ' + movNote);
+  }
+
+  // Flags
+  if (flags.includes('KEY_NUMBER_VALUE'))   parts.push('Key number value identified.');
+  if (flags.includes('SHARP_DIVERGENCE'))   parts.push('Sharp book divergence detected.');
+  if (flags.includes('HIGH_VARIANCE_ML'))   parts.push('High-variance moneyline — variance penalty applied.');
+  if (flags.includes('NUMBER_DISCREPANCY')) parts.push('Total number discrepancy — monitor only.');
+  if (flags.includes('ML_UNIT_CAP'))        parts.push('ML unit cap applied.');
+
+  // Score and verdict
+  parts.push('Score: ' + score + '/100 → ' + verdict.replace(/_/g, ' '));
+
+  return parts.join(' · ');
+}
+
+// ── assignVerdictAndUnits(scoreResult, edgeResult, consensusResult, movementResult)
+//
+// Primary function called by Component 8 (buildRecommendationCard).
+//
+// @param scoreResult    Full output from scoreEngine() (Component 6).
+// @param edgeResult     Full output from calculateEdge() (Component 4).
+// @param consensusResult Full output from buildSharpConsensus() (Component 3).
+// @param movementResult Full output from trackLineMovement() (Component 5).
+//
+// @returns verdict result object (the final engine output for this market)
+
+function assignVerdictAndUnits(scoreResult, edgeResult, consensusResult, movementResult) {
+
+  // ── PRE-CONDITION: pass through NO_PLAY from Component 6 ─────────────────
+  // If the scoring engine returned NO_PLAY (because Component 4 returned
+  // NO_PLAY), propagate it immediately. No verdict lookup needed.
+  if (!scoreResult || scoreResult.verdict === 'NO_PLAY') {
+    return {
+      verdict:       'NO_PLAY',
+      verdictLabel:  'NO PLAY',
+      units:         0,
+      score:         0,
+      unitsCapped:   false,
+      unitCapReason: null,
+      flags:         (scoreResult && scoreResult.flags) ? [...scoreResult.flags] : [],
+      notes:         (scoreResult && scoreResult.reason) || 'No actionable edge found.',
+      consensusTier: consensusResult ? consensusResult.consensusTier : 'NO_DATA',
+      movementLabel: movementResult  ? movementResult.movementLabel  : 'STABLE',
+    };
+  }
+
+  const score = scoreResult.score;
+  const flags = [...(scoreResult.flags || [])];
+
+  // ── STEP 1: Verdict lookup ────────────────────────────────────────────────
+  // VERDICT_THRESHOLDS is ordered highest minScore first. find() returns the
+  // first entry where score >= minScore — so the highest applicable threshold wins.
+  const verdictEntry = SHARPLINE_CONFIG.VERDICT_THRESHOLDS.find(v => score >= v.minScore);
+
+  // Fallback: should never be needed given the array covers 0+, but be safe
+  const verdict      = verdictEntry ? verdictEntry.verdict : 'NO_PLAY';
+  const verdictLabel = verdictEntry ? verdictEntry.label   : 'NO PLAY';
+
+  // ── STEP 2: Default unit assignment ──────────────────────────────────────
+  let units = SHARPLINE_CONFIG.DEFAULT_UNITS[verdict] || 0;
+
+  // ── STEP 3: Phase 1 hard unit cap ────────────────────────────────────────
+  // 3u is the absolute ceiling in Phase 1 regardless of score or verdict.
+  // 4u and 5u unlock in Phase 2 after CLV validates the engine.
+  units = Math.min(units, SHARPLINE_CONFIG.PHASE1_UNIT_CAP);
+
+  // ── STEP 4: ML band unit cap ─────────────────────────────────────────────
+  // For moneyline (h2h) bets, apply a per-band unit ceiling based on the
+  // available side's implied probability. This is bankroll discipline, not
+  // a penalty on edge quality. Plus-money bets have high variance regardless
+  // of how well they score.
+  let unitsCapped   = false;
+  let unitCapReason = null;
+
+  if (edgeResult && edgeResult.availableVigRemoved != null &&
+      (edgeResult.marketType === 'h2h' ||
+       (edgeResult.flags && edgeResult.flags.includes('ML_MARKET')))) {
+    const mlCap = SHARPLINE_CONFIG.ML_UNIT_CAPS.find(
+      b => edgeResult.availableVigRemoved >= b.minProb
+    );
+    if (mlCap) {
+      // Always push the flag for internal tracking, even if cap doesn't change units
+      if (!flags.includes('ML_UNIT_CAP')) {
+        flags.push('ML_UNIT_CAP');
+      }
+      if (mlCap.maxUnits < units) {
+        // Cap actually reduces unit count — surface to user
+        const originalUnits = units;
+        units         = mlCap.maxUnits;
+        unitsCapped   = true;
+        unitCapReason = buildCapReason(mlCap, originalUnits, units);
+      }
+    }
+  }
+
+  // ── STEP 5: Build notes ───────────────────────────────────────────────────
+  const notes = buildNotes(
+    verdict, score, edgeResult, consensusResult, movementResult, flags
+  );
+
+  // ── STEP 6: Return ────────────────────────────────────────────────────────
+  return {
+    verdict,
+    verdictLabel,
+    units,
+    score,
+    unitsCapped,
+    unitCapReason,
+    flags,
+    notes,
+    consensusTier: consensusResult ? consensusResult.consensusTier : 'UNKNOWN',
+    movementLabel: movementResult  ? movementResult.movementLabel  : 'STABLE',
+  };
+}
+
+// =============================================================================
+// COMPONENT 7 VERIFICATION — 10 test cases from the spec
+// =============================================================================
+
+(function verifyComponent7() {
+  const checks = [];
+  const ok = (label, pass) => checks.push({ label, pass: !!pass });
+
+  // Helper: minimal scoreResult (mimics Component 6 output)
+  const sr = (score, verdict = null, flags = [], reason = null) => ({
+    score,
+    verdict: verdict || (score === 0 ? 'NO_PLAY' : null), // only set if explicitly NO_PLAY
+    flags: [...flags],
+    reason,
+  });
+
+  // Helper: minimal edgeResult for spread market (no ML cap)
+  const spreadEdge = (avr = 0.530) => ({
+    marketType: 'spreads',
+    availableVigRemoved: avr,
+    dampenedEdge: 0.050,
+    minThreshold: 0.025,
+    flags: [],
+  });
+
+  // Helper: ML edge result
+  const mlEdge = (avr) => ({
+    marketType: 'h2h',
+    availableVigRemoved: avr,
+    dampenedEdge: 0.050,
+    minThreshold: 0.035,
+    flags: [],
+  });
+
+  // Helper: minimal consensus + movement
+  const consensus = (tier = 'SINGLE_SHARP', books = ['williamhill_us']) => ({
+    consensusTier: tier, sharpBooksUsed: books, consensusConfidence: 0.70,
+  });
+  const movement = (label = 'STABLE') => ({
+    movementLabel: label, movementMultiplier: 1.00, isFirstPull: false,
+  });
+
+  // ── Test 1: Score 72 → BET, 2u, no cap ────────────────────────────────────
+  {
+    const r = assignVerdictAndUnits(sr(72), spreadEdge(), consensus(), movement());
+    ok('T1: verdict = BET',        r.verdict === 'BET');
+    ok('T1: verdictLabel = BET',   r.verdictLabel === 'BET');
+    ok('T1: units = 2',            r.units === 2);
+    ok('T1: unitsCapped = false',  r.unitsCapped === false);
+    ok('T1: score = 72',           r.score === 72);
+  }
+
+  // ── Test 2: Score 85 → STRONG_BET, 3u, capped at 3 ──────────────────────
+  {
+    const r = assignVerdictAndUnits(sr(85), spreadEdge(), consensus(), movement());
+    ok('T2: verdict = STRONG_BET',        r.verdict === 'STRONG_BET');
+    ok('T2: verdictLabel = STRONG BET',   r.verdictLabel === 'STRONG BET');
+    ok('T2: units = 3',                   r.units === 3);
+    ok('T2: units never > 3',             r.units <= 3);
+  }
+
+  // ── Test 3: Score 57 → LEAN, 1u ───────────────────────────────────────────
+  {
+    const r = assignVerdictAndUnits(sr(57), spreadEdge(), consensus(), movement());
+    ok('T3: verdict = LEAN',       r.verdict === 'LEAN');
+    ok('T3: verdictLabel = LEAN',  r.verdictLabel === 'LEAN');
+    ok('T3: units = 1',            r.units === 1);
+  }
+
+  // ── Test 4: Score 45 → WATCH, 0u ──────────────────────────────────────────
+  {
+    const r = assignVerdictAndUnits(sr(45), spreadEdge(), consensus(), movement());
+    ok('T4: verdict = WATCH',      r.verdict === 'WATCH');
+    ok('T4: units = 0',            r.units === 0);
+  }
+
+  // ── Test 5: Score 20 → NO_PLAY, 0u ────────────────────────────────────────
+  {
+    const r = assignVerdictAndUnits(sr(20), spreadEdge(), consensus(), movement());
+    ok('T5: verdict = NO_PLAY',    r.verdict === 'NO_PLAY');
+    ok('T5: units = 0',            r.units === 0);
+  }
+
+  // ── Test 6: NO_PLAY pre-condition from Component 6 ────────────────────────
+  {
+    const noPlayScore = {
+      score: 0, verdict: 'NO_PLAY',
+      reason: 'Edge below minimum threshold', flags: [],
+    };
+    const r = assignVerdictAndUnits(noPlayScore, spreadEdge(), consensus(), movement());
+    ok('T6: verdict = NO_PLAY',            r.verdict === 'NO_PLAY');
+    ok('T6: score = 0',                    r.score === 0);
+    ok('T6: reason passed through',        r.notes.includes('Edge below minimum threshold'));
+    ok('T6: units = 0',                    r.units === 0);
+  }
+
+  // ── Test 7: STRONG_BET on heavy underdog ML → units capped to 1u ─────────
+  // availableVigRemoved = 0.29 (< 0.35) → significant_underdog → max 1u
+  {
+    const r = assignVerdictAndUnits(
+      sr(86, null, ['HIGH_VARIANCE_ML']),
+      mlEdge(0.29),
+      consensus(), movement()
+    );
+    ok('T7: verdict = STRONG_BET',    r.verdict === 'STRONG_BET');
+    ok('T7: units = 1 (ML cap)',       r.units === 1);
+    ok('T7: unitsCapped = true',      r.unitsCapped === true);
+    ok('T7: unitCapReason populated', r.unitCapReason !== null && r.unitCapReason.length > 0);
+    ok('T7: ML_UNIT_CAP flag',        r.flags.includes('ML_UNIT_CAP'));
+  }
+
+  // ── Test 8: BET on slight_underdog ML — cap = 2u, no change ──────────────
+  // availableVigRemoved = 0.385 → slight_underdog → max 2u; verdict BET = 2u → no reduction
+  {
+    const r = assignVerdictAndUnits(sr(68), mlEdge(0.385), consensus(), movement());
+    ok('T8: verdict = BET',            r.verdict === 'BET');
+    ok('T8: units = 2 (cap = same)',   r.units === 2);
+    ok('T8: unitsCapped = false',      r.unitsCapped === false);
+    ok('T8: ML_UNIT_CAP flag added',   r.flags.includes('ML_UNIT_CAP'));
+  }
+
+  // ── Test 9: Score exactly at all threshold boundaries ─────────────────────
+  {
+    const boundaries = [
+      { score: 85, verdict: 'STRONG_BET', units: 3 },
+      { score: 75, verdict: 'STRONG_BET', units: 3 },
+      { score: 65, verdict: 'BET',        units: 2 },
+      { score: 55, verdict: 'LEAN',       units: 1 },
+      { score: 40, verdict: 'WATCH',      units: 0 },
+    ];
+    boundaries.forEach(({ score, verdict, units }) => {
+      const r = assignVerdictAndUnits(sr(score), spreadEdge(), consensus(), movement());
+      ok(`T9: score ${score} → ${verdict}`, r.verdict === verdict);
+      ok(`T9: score ${score} → ${units}u`,  r.units === units);
+    });
+  }
+
+  // ── Test 10: Score one below threshold boundaries ─────────────────────────
+  {
+    const belowBoundaries = [
+      { score: 39, verdict: 'NO_PLAY', units: 0 },
+      { score: 54, verdict: 'WATCH',   units: 0 },
+    ];
+    belowBoundaries.forEach(({ score, verdict, units }) => {
+      const r = assignVerdictAndUnits(sr(score), spreadEdge(), consensus(), movement());
+      ok(`T10: score ${score} → ${verdict}`, r.verdict === verdict);
+      ok(`T10: score ${score} → ${units}u`,  r.units === units);
+    });
+  }
+
+  // ── Output shape validation ───────────────────────────────────────────────
+  {
+    const r = assignVerdictAndUnits(sr(72), spreadEdge(), consensus(), movement());
+    const required = ['verdict','verdictLabel','units','score','unitsCapped',
+                      'unitCapReason','flags','notes','consensusTier','movementLabel'];
+    required.forEach(f => ok(`Shape: has '${f}'`, f in r));
+    ok('Shape: notes is string',       typeof r.notes === 'string');
+    ok('Shape: notes non-empty',       r.notes.length > 0);
+    ok('Shape: consensusTier present', r.consensusTier === 'SINGLE_SHARP');
+    ok('Shape: movementLabel present', r.movementLabel === 'STABLE');
+  }
+
+  // ── Notes content validation ──────────────────────────────────────────────
+  {
+    const r = assignVerdictAndUnits(
+      sr(72, null, ['KEY_NUMBER_VALUE', 'SHARP_DIVERGENCE']),
+      spreadEdge(),
+      consensus('SINGLE_SHARP', ['williamhill_us']),
+      movement('CONFIRMING')
+    );
+    ok('Notes: contains consensus tier',    r.notes.includes('SINGLE SHARP'));
+    ok('Notes: contains edge %',            r.notes.includes('Edge:'));
+    ok('Notes: contains movement label',    r.notes.includes('CONFIRMING'));
+    ok('Notes: contains key number note',   r.notes.includes('Key number value'));
+    ok('Notes: contains divergence note',   r.notes.includes('Sharp book divergence'));
+    ok('Notes: contains score',             r.notes.includes('72/100'));
+    ok('Notes: contains verdict',           r.notes.includes('BET'));
+  }
+
+  // ── Report ─────────────────────────────────────────────────────────────────
+  const passed = checks.filter(c => c.pass).length;
+  const failed = checks.filter(c => !c.pass);
+
+  console.log('\n=== SHARPLINE — Component 7 Verification ===');
+  console.log(passed + ' / ' + checks.length + ' checks passed');
+  if (failed.length > 0) {
+    console.warn('\n FAILED:');
+    failed.forEach(c => console.warn('  FAIL: ' + c.label));
+  } else {
+    console.log('\n All checks passed. Component 7 verified. Proceed to Component 8.');
+  }
+})();
+
+
+// =============================================================================
 // EXISTING APP CODE BELOW — UNCHANGED
 // =============================================================================
 
