@@ -714,13 +714,13 @@ function buildSharpConsensus(books, betSide, market, sport) {
     }
   }
 
-  // ── STEP 3c: Market fragmentation gate ──────────────────────────────────────
-  // If the full market spread (max - min vig-removed prob across all books) > 0.20,
-  // the market is unsettled, fragmented, or contains alt-lines at different numbers.
-  // Example: BetRivers -127 (0.517) and Circa +380 (0.198) on the same game = 0.319 spread.
-  // No sharp consensus is reliable when the market hasn't agreed on a price.
-  // Return NO_DATA to cause the engine to produce NO_PLAY for this market.
-  {
+  // ── STEP 3c: Market fragmentation gate (h2h / ML only) ──────────────────────
+  // For moneyline markets: if the full market spread (max - min vig-removed prob)
+  // exceeds 0.20, the market is unsettled or contains stale lines at wildly different
+  // prices. Example: BetRivers -127 (0.517) and Circa +380 (0.198) on the same game.
+  // NOT applied to spread markets — different spread numbers (-3.5, -4, -4.5) are
+  // normal and produce wide apparent spreads that are not fragmentation.
+  if (market === 'h2h') {
     const allBookProbs = [];
     for (const book of books) {
       try {
@@ -741,7 +741,7 @@ function buildSharpConsensus(books, betSide, market, sport) {
           secondaryBookCount:  secondary.length,
           singleSideFlag:      true,
           betSide, market, sport,
-          reason: 'Market fragmented — book spread ' + (mktSpread * 100).toFixed(1) + '% (max 20%)',
+          reason: 'ML market fragmented — book spread ' + (mktSpread * 100).toFixed(1) + '% (max 20%)',
           evaluatedAt: new Date().toISOString(),
         };
       }
