@@ -4446,6 +4446,15 @@ function SharpLine(){
 
             {enriched.length>0?(
               enriched.map((g,i)=><GameCard key={g.gameId+g.marketType+g.betSide} game={g} index={i}/>)
+            ):cache[sport]?(
+              <div style={{textAlign:"center",padding:60,color:T.mut}}>
+                <div style={{fontSize:28,marginBottom:12}}>—</div>
+                <div style={{fontSize:13,fontWeight:600,marginBottom:6,color:T.tx}}>No edges found</div>
+                <div style={{fontSize:11,fontFamily:F.m,lineHeight:1.6,maxWidth:260,margin:"0 auto"}}>
+                  Sharp books and the market agree on current prices.{" "}
+                  No bad numbers detected. Check back as lines move closer to game time.
+                </div>
+              </div>
             ):(
               <div style={{textAlign:"center",padding:60,color:T.mut}}>
                 <div style={{fontSize:32,marginBottom:12}}>◎</div>
