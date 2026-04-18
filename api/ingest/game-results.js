@@ -167,7 +167,23 @@ export async function processGameResult(oddsApiGameId, scoreData = null) {
   console.log(`  Home (${game.home_team}): prevTPR=${homeTPR.rating_value}, GPS=${homeGPS} (raw=${homeGPS_raw}), newTPR=${newHomeTPR}`);
   console.log(`  Away (${game.away_team}): prevTPR=${awayTPR.rating_value}, GPS=${awayGPS} (raw=${awayGPS_raw}), newTPR=${newAwayTPR}`);
 
-  // 9. Append new TPR rows (NEVER UPDATE existing rows)
+  // 9. Update game record with final scores and status FIRST — this sets the
+  //    idempotency guard (status='final'). If the TPR insert below fails, a
+  //    retry will skip this game correctly rather than double-updating TPR.
+  try {
+    await update('games', `odds_api_game_id=eq.${oddsApiGameId}`, {
+      status: 'final',
+      home_score: homeRuns,
+      away_score: awayRuns,
+      updated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    log.errors.push(`Game status update failed (aborting before TPR write): ${err.message}`);
+    return log;
+  }
+
+  // 10. Append new TPR rows (NEVER UPDATE existing rows)
+  //     Game is already marked final above — retry-safe.
   try {
     await insert('team_power_ratings', {
       team_id: game.home_team,
@@ -189,19 +205,6 @@ export async function processGameResult(oddsApiGameId, scoreData = null) {
   } catch (err) {
     log.errors.push(`TPR insert failed: ${err.message}`);
     return log;
-  }
-
-  // 10. Update game record with final scores and status
-  try {
-    await update('games', `odds_api_game_id=eq.${oddsApiGameId}`, {
-      status: 'final',
-      home_score: homeRuns,
-      away_score: awayRuns,
-      updated_at: new Date().toISOString(),
-    });
-  } catch (err) {
-    log.errors.push(`Game status update failed: ${err.message}`);
-    // Don't return — TPR was already updated successfully
   }
 
   log.processed = true;
