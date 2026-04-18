@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sharpline — Status</title>
+</head>
+<body style="font-family: monospace; padding: 2rem;">
+  <h1>Sharpline</h1>
+  <p>Status: <strong>LIVE</strong></p>
+  <p>Database: <strong id="db-status">Checking...</strong></p>
+  <p id="db-detail"></p>
+  <p style="color: #888; font-size: 0.85rem;">M2 infrastructure — no application logic deployed at this milestone.</p>
+
+  <script type="module">
+    import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
+
+    const SUPABASE_URL = 'https://tspjoigipprzxwrdfkww.supabase.co'
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzcGpvaWdpcHByenh3cmRma3d3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY1MjM0MTIsImV4cCI6MjA5MjA5OTQxMn0.0V8Dkz17e5MfiqKAVUPKSgt_M_lQunK3KzKqwARFeIs'
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+    const { count, error } = await supabase
+      .from('games')
+      .select('*', { count: 'exact', head: true })
+
+    if (error) {
+      document.getElementById('db-status').textContent = '✗ NOT CONNECTED'
+      document.getElementById('db-detail').textContent = error.message
+    } else {
+      document.getElementById('db-status').textContent = '✓ CONNECTED'
+      document.getElementById('db-detail').textContent = `Connected — games table accessible (${count ?? 0} rows)`
+    }
+  </script>
+</body>
+</html>
