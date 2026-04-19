@@ -1,304 +1,146 @@
-// GET|POST /api/bets/[action] — M5 Tasks 2-4: CLV, Results, Performance
-// Catch-all route to stay within Vercel Hobby function limit
-// Routes: calculate-clv (POST), record-results (POST), performance (GET)
+import { createClient } from '@supabase/supabase-js';
 
-import { select, insert, update } from '../_lib/supabase.js';
-import { impliedProbability, removeVig } from '../_lib/model.js';
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-// ─── American → Decimal odds conversion ──────────────────────────────────────
-
-function americanToDecimal(americanOdds) {
-  const odds = Number(americanOdds);
-  if (odds < 0) return (100 / Math.abs(odds)) + 1;
-  return (odds / 100) + 1;
-}
-
-// ─── Task 2: calculateCLVForGame ─────────────────────────────────────────────
-
-export async function calculateCLVForGame(gameId) {
-  const log = { gameId, calculated: 0, skipped: 0, errors: [] };
-
-  const closingSnapshots = await select('odds_snapshots',
-    `game_id=eq.${gameId}&snapshot_type=eq.closing&order=captured_at.desc&limit=1`);
-
-  if (closingSnapshots.length === 0) {
-    log.skipped++;
-    log.skipReason = 'No closing snapshot found for this game';
-    return log;
-  }
-
-  const closingSnap = closingSnapshots[0];
-  const closingHomeML = Number(closingSnap.home_moneyline);
-  const closingAwayML = Number(closingSnap.away_moneyline);
-
-  const { homeTrueProb: closingHomeProb, awayTrueProb: closingAwayProb } = removeVig(closingHomeML, closingAwayML);
-
-  const games = await select('games', `id=eq.${gameId}`);
-  if (games.length === 0) {
-    log.errors.push(`Game not found: ${gameId}`);
-    return log;
-  }
-  const game = games[0];
-
-  const bets = await select('bets', `game_id=eq.${gameId}`);
-  if (bets.length === 0) {
-    log.skipped++;
-    log.skipReason = 'No bets found for this game';
-    return log;
-  }
-
-  const existingResults = await select('bet_results',
-    `bet_id=in.(${bets.map(b => b.id).join(',')})`);
-  const alreadyCalculated = new Set(existingResults.map(r => r.bet_id));
-
-  for (const bet of bets) {
-    if (alreadyCalculated.has(bet.id)) {
-      log.skipped++;
-      continue;
-    }
-
-    try {
-      const isHome = bet.team_bet_on === game.home_team;
-      const closingImpliedProbability = isHome ? closingHomeProb : closingAwayProb;
-      const closingOdds = isHome ? closingHomeML : closingAwayML;
-
-      const betImpliedProb = Number(bet.implied_probability_at_bet);
-      const clv = closingImpliedProbability - betImpliedProb;
-
-      await insert('bet_results', {
-        bet_id: bet.id,
-        closing_odds: closingOdds,
-        closing_implied_probability: parseFloat(closingImpliedProbability.toFixed(6)),
-        clv: parseFloat(clv.toFixed(6)),
-        clv_captured_at: new Date().toISOString(),
-      });
-
-      log.calculated++;
-    } catch (err) {
-      log.errors.push(`CLV calc failed for bet ${bet.id}: ${err.message}`);
-    }
-  }
-
-  return log;
-}
-
-// ─── Task 3: recordGameResult ────────────────────────────────────────────────
-
-export async function recordGameResult(gameId) {
-  const log = { gameId, recorded: 0, skipped: 0, errors: [] };
-
-  const games = await select('games', `id=eq.${gameId}`);
-  if (games.length === 0) {
-    log.errors.push(`Game not found: ${gameId}`);
-    return log;
-  }
-  const game = games[0];
-
-  if (game.status !== 'final') {
-    log.skipped++;
-    log.skipReason = `Game status is '${game.status}' — must be 'final'`;
-    return log;
-  }
-
-  if (game.home_score === null || game.away_score === null) {
-    log.errors.push('Game is final but scores are missing');
-    return log;
-  }
-
-  const homeScore = Number(game.home_score);
-  const awayScore = Number(game.away_score);
-
-  const bets = await select('bets', `game_id=eq.${gameId}`);
-  if (bets.length === 0) {
-    log.skipped++;
-    log.skipReason = 'No bets found for this game';
-    return log;
-  }
-
-  const betResults = await select('bet_results',
-    `bet_id=in.(${bets.map(b => b.id).join(',')})`);
-
-  const resultsByBetId = {};
-  for (const r of betResults) {
-    resultsByBetId[r.bet_id] = r;
-  }
-
-  for (const bet of bets) {
-    const existingResult = resultsByBetId[bet.id];
-
-    if (!existingResult) {
-      log.skipped++;
-      continue;
-    }
-
-    if (existingResult.result !== null) {
-      log.skipped++;
-      continue;
-    }
-
-    try {
-      const isHome = bet.team_bet_on === game.home_team;
-      const teamScore = isHome ? homeScore : awayScore;
-      const oppScore = isHome ? awayScore : homeScore;
-
-      let result;
-      if (teamScore > oppScore) {
-        result = 'win';
-      } else if (teamScore < oppScore) {
-        result = 'loss';
-      } else {
-        result = 'push';
-      }
-
-      const stakeAmount = Number(bet.stake_amount);
-      const decimalOdds = americanToDecimal(bet.odds_at_bet);
-      let payoutAmount;
-
-      if (result === 'win') {
-        payoutAmount = parseFloat((stakeAmount * decimalOdds).toFixed(2));
-      } else if (result === 'loss') {
-        payoutAmount = 0;
-      } else {
-        payoutAmount = stakeAmount;
-      }
-
-      await update('bet_results', `id=eq.${existingResult.id}`, {
-        result,
-        payout_amount: payoutAmount,
-        result_captured_at: new Date().toISOString(),
-      });
-
-      log.recorded++;
-    } catch (err) {
-      log.errors.push(`Result recording failed for bet ${bet.id}: ${err.message}`);
-    }
-  }
-
-  return log;
-}
-
-// ─── Task 4: Performance aggregation ─────────────────────────────────────────
-
-async function handlePerformance(req, res) {
-  try {
-    const bets = await select('bets', 'order=created_at.desc');
-    const betResults = await select('bet_results', '');
-
-    const resultsByBetId = {};
-    for (const r of betResults) {
-      resultsByBetId[r.bet_id] = r;
-    }
-
-    const totalBets = bets.length;
-    let betsWithCLV = 0;
-    let totalCLV = 0;
-    let positiveCLVCount = 0;
-    let resolvedBets = 0;
-    let wins = 0;
-    let losses = 0;
-    let totalStaked = 0;
-    let totalPayout = 0;
-
-    const clvByDecision = {
-      bet: { count: 0, totalCLV: 0 },
-      lean: { count: 0, totalCLV: 0 },
-      watchlist: { count: 0, totalCLV: 0 },
-    };
-
-    for (const bet of bets) {
-      const result = resultsByBetId[bet.id];
-
-      if (result && result.clv !== null) {
-        betsWithCLV++;
-        const clv = Number(result.clv);
-        totalCLV += clv;
-        if (clv > 0) positiveCLVCount++;
-
-        const decision = bet.model_decision_at_bet;
-        if (clvByDecision[decision]) {
-          clvByDecision[decision].count++;
-          clvByDecision[decision].totalCLV += clv;
-        }
-      }
-
-      if (result && result.result !== null) {
-        resolvedBets++;
-        const stake = Number(bet.stake_amount);
-        const payout = Number(result.payout_amount);
-        totalStaked += stake;
-        totalPayout += payout;
-
-        if (result.result === 'win') wins++;
-        if (result.result === 'loss') losses++;
-      }
-    }
-
-    const averageCLV = betsWithCLV > 0 ? parseFloat((totalCLV / betsWithCLV).toFixed(6)) : 0;
-    const positiveCLVPct = betsWithCLV > 0 ? parseFloat(((positiveCLVCount / betsWithCLV) * 100).toFixed(2)) : 0;
-    const winPct = resolvedBets > 0 ? parseFloat(((wins / resolvedBets) * 100).toFixed(2)) : 0;
-    const roi = totalStaked > 0 ? parseFloat((((totalPayout - totalStaked) / totalStaked) * 100).toFixed(2)) : 0;
-
-    const clvByDecisionFormatted = {};
-    for (const [key, val] of Object.entries(clvByDecision)) {
-      clvByDecisionFormatted[key] = {
-        count: val.count,
-        avgCLV: val.count > 0 ? parseFloat((val.totalCLV / val.count).toFixed(6)) : 0,
-      };
-    }
-
-    return res.status(200).json({
-      totalBets,
-      betsWithCLV,
-      averageCLV,
-      positiveCLVCount,
-      positiveCLVPct,
-      clvByDecision: clvByDecisionFormatted,
-      resolvedBets,
-      wins,
-      losses,
-      winPct,
-      roi,
-      totalStaked: parseFloat(totalStaked.toFixed(2)),
-      totalPayout: parseFloat(totalPayout.toFixed(2)),
-    });
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-}
-
-// ─── Route handler ───────────────────────────────────────────────────────────
+// GET /api/bets/performance  → aggregated CLV / win-rate stats
+// GET /api/bets/discipline   → discipline score (bet-on-signal rate)
+// Any other action returns 404
 
 export default async function handler(req, res) {
   const { action } = req.query;
 
-  switch (action) {
-    case 'calculate-clv': {
-      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed — use POST' });
-      const { gameId } = req.query;
-      if (!gameId) return res.status(400).json({ error: 'gameId query parameter is required' });
-      try {
-        const result = await calculateCLVForGame(gameId);
-        return res.status(200).json({ success: true, ...result });
-      } catch (err) {
-        return res.status(500).json({ error: err.message });
+  if (action === 'performance') {
+    return handlePerformance(req, res);
+  }
+  if (action === 'discipline') {
+    return handleDiscipline(req, res);
+  }
+  return res.status(404).json({ error: `Unknown action: ${action}` });
+}
+
+// ── Performance ──────────────────────────────────────────────────────────────
+
+async function handlePerformance(req, res) {
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+  try {
+    const { data: bets, error } = await supabase
+      .from('bets')
+      .select('id, odds_at_bet, stake_amount, model_decision_at_bet, result, payout, closing_implied_probability, implied_probability_at_bet')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    if (!bets || bets.length === 0) {
+      return res.status(200).json({
+        totalBets: 0,
+        avgClv: null,
+        pctPositiveClv: null,
+        winRate: null,
+        roi: null,
+        clvByDecision: {},
+      });
+    }
+
+    const resolved = bets.filter(b => b.result === 'win' || b.result === 'loss');
+    const withClv = bets.filter(b => b.closing_implied_probability !== null && b.implied_probability_at_bet !== null);
+
+    const clvValues = withClv.map(b => b.closing_implied_probability - b.implied_probability_at_bet);
+    const avgClv = clvValues.length > 0 ? clvValues.reduce((a, c) => a + c, 0) / clvValues.length : null;
+    const pctPositiveClv = clvValues.length > 0 ? clvValues.filter(v => v > 0).length / clvValues.length : null;
+
+    const wins = resolved.filter(b => b.result === 'win').length;
+    const winRate = resolved.length > 0 ? wins / resolved.length : null;
+
+    const totalStake = bets.reduce((a, b) => a + (b.stake_amount || 0), 0);
+    const totalPayout = resolved.reduce((a, b) => a + (b.payout || 0), 0);
+    const totalStakeResolved = resolved.reduce((a, b) => a + (b.stake_amount || 0), 0);
+    const roi = totalStakeResolved > 0 ? (totalPayout - totalStakeResolved) / totalStakeResolved : null;
+
+    // CLV by decision tier
+    const decisions = ['bet', 'lean', 'watchlist', 'pass'];
+    const clvByDecision = {};
+    for (const d of decisions) {
+      const group = withClv.filter(b => b.model_decision_at_bet?.toLowerCase() === d);
+      if (group.length > 0) {
+        const vals = group.map(b => b.closing_implied_probability - b.implied_probability_at_bet);
+        clvByDecision[d] = {
+          count: group.length,
+          avgClv: vals.reduce((a, c) => a + c, 0) / vals.length,
+        };
       }
     }
-    case 'record-results': {
-      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed — use POST' });
-      const { gameId } = req.query;
-      if (!gameId) return res.status(400).json({ error: 'gameId query parameter is required' });
-      try {
-        const result = await recordGameResult(gameId);
-        return res.status(200).json({ success: true, ...result });
-      } catch (err) {
-        return res.status(500).json({ error: err.message });
-      }
+
+    // CLV trend (last 20 bets with CLV)
+    const clvTrend = withClv.slice(0, 20).map(b => ({
+      id: b.id,
+      clv: b.closing_implied_probability - b.implied_probability_at_bet,
+    }));
+
+    return res.status(200).json({
+      totalBets: bets.length,
+      avgClv,
+      pctPositiveClv,
+      winRate,
+      roi,
+      clvByDecision,
+      clvTrend,
+    });
+  } catch (err) {
+    console.error('[performance]', err);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+// ── Discipline ────────────────────────────────────────────────────────────────
+
+async function handleDiscipline(req, res) {
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+  try {
+    // Denominator: distinct game_ids where model scored bet or lean for any team
+    const { data: signals, error: sigErr } = await supabase
+      .from('model_scores')
+      .select('game_id')
+      .in('decision', ['bet', 'lean']);
+    if (sigErr) throw sigErr;
+
+    const betLeanGameIds = [...new Set((signals || []).map(r => r.game_id))];
+
+    if (betLeanGameIds.length === 0) {
+      return res.status(200).json({
+        betLeanGames: 0,
+        betsPlacedOnBetLean: 0,
+        disciplineScore: null,
+        note: 'No bet/lean signals recorded yet',
+      });
     }
-    case 'performance': {
-      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed — use GET' });
-      return handlePerformance(req, res);
-    }
-    default:
-      return res.status(404).json({ error: `Unknown action: ${action}. Valid: calculate-clv, record-results, performance` });
+
+    // Numerator: which of those games actually have a bet logged
+    const { data: placed, error: betErr } = await supabase
+      .from('bets')
+      .select('game_id')
+      .in('game_id', betLeanGameIds);
+    if (betErr) throw betErr;
+
+    const bettedGameIds = new Set((placed || []).map(r => r.game_id));
+    const betsPlacedOnBetLean = [...new Set([...bettedGameIds].filter(id => betLeanGameIds.includes(id)))].length;
+
+    const disciplineScore = betsPlacedOnBetLean / betLeanGameIds.length;
+
+    return res.status(200).json({
+      betLeanGames: betLeanGameIds.length,
+      betsPlacedOnBetLean,
+      disciplineScore,
+      note: `Bet placed on ${betsPlacedOnBetLean} of ${betLeanGameIds.length} Bet/Lean games`,
+    });
+  } catch (err) {
+    console.error('[discipline]', err);
+    return res.status(500).json({ error: err.message });
   }
 }
