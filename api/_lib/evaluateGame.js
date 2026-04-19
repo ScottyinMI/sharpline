@@ -1,8 +1,8 @@
-// ═══════════════════════════════════════════════════════════════════════════════
-// SHARPLINE — evaluateGame orchestrator (M4 Task 9)
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// SHARPLINE â evaluateGame orchestrator (M4 Task 9)
 // Runs the full 13-step model pipeline for one team in one game.
-// All DB reads happen here — scoring functions are pure.
-// ═══════════════════════════════════════════════════════════════════════════════
+// All DB reads happen here â scoring functions are pure.
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 import { select, insert } from './supabase.js';
 import {
@@ -22,9 +22,9 @@ import {
   PITCHER_GATE_THRESHOLD,
 } from './model.js';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPERS — data fetching from Supabase REST API
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// HELPERS â data fetching from Supabase REST API
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 async function fetchGame(gameId) {
   const rows = await select('games', `id=eq.${gameId}`);
@@ -76,9 +76,9 @@ async function fetchLast10TPRs(teamId) {
   return rows;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // TASK 9: evaluateGame
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 /**
  * @param {string} gameId - UUID from games table
@@ -89,7 +89,7 @@ async function fetchLast10TPRs(teamId) {
 export async function evaluateGame(gameId, evaluatedTeam, manualInputs = {}) {
   const warnings = [];
 
-  // ── Step 1: Fetch game record ──
+  // ââ Step 1: Fetch game record ââ
   const game = await fetchGame(gameId);
   if (!game) throw new Error(`Game not found: ${gameId}`);
 
@@ -100,26 +100,26 @@ export async function evaluateGame(gameId, evaluatedTeam, manualInputs = {}) {
   const evalVenueType = isHome ? 'home' : 'away';
   const oppVenueType = isHome ? 'away' : 'home';
 
-  // ── Step 2: Fetch odds snapshot ──
+  // ââ Step 2: Fetch odds snapshot ââ
   const odds = await fetchOddsSnapshot(gameId);
   if (!odds) throw new Error(`No odds snapshot found for game: ${gameId}`);
 
   const homeML = Number(odds.home_moneyline);
   const awayML = Number(odds.away_moneyline);
 
-  // ── Step 3: Vig removal → market probability ──
+  // ââ Step 3: Vig removal â market probability ââ
   const { homeTrueProb, awayTrueProb } = removeVig(homeML, awayML);
   const marketProbability = isHome ? homeTrueProb : awayTrueProb;
 
-  // ── Step 4: Score all 7 factors ──
+  // ââ Step 4: Score all 7 factors ââ
 
   // Factor 1: Pitcher Advantage
   const evalPitcherStats = await fetchPitcherStatsByName(evalPitcherName);
   const oppPitcherStats = await fetchPitcherStatsByName(oppPitcherName);
-  if (!evalPitcherStats && evalPitcherName) warnings.push(`No pitcher stats for ${evalPitcherName} — defaulting to neutral (5.0)`);
-  if (!oppPitcherStats && oppPitcherName) warnings.push(`No pitcher stats for ${oppPitcherName} — defaulting to neutral (5.0)`);
-  if (!evalPitcherName) warnings.push(`No pitcher listed for ${evaluatedTeam} — defaulting to neutral (5.0)`);
-  if (!oppPitcherName) warnings.push(`No pitcher listed for ${opponentTeam} — defaulting to neutral (5.0)`);
+  if (!evalPitcherStats && evalPitcherName) warnings.push(`No pitcher stats for ${evalPitcherName} â defaulting to neutral (5.0)`);
+  if (!oppPitcherStats && oppPitcherName) warnings.push(`No pitcher stats for ${oppPitcherName} â defaulting to neutral (5.0)`);
+  if (!evalPitcherName) warnings.push(`No pitcher listed for ${evaluatedTeam} â defaulting to neutral (5.0)`);
+  if (!oppPitcherName) warnings.push(`No pitcher listed for ${opponentTeam} â defaulting to neutral (5.0)`);
 
   const evalRecentForm = evalPitcherStats ? await fetchPitcherRecentForm(evalPitcherStats.pitcher_id) : [];
   const oppRecentForm = oppPitcherStats ? await fetchPitcherRecentForm(oppPitcherStats.pitcher_id) : [];
@@ -131,8 +131,8 @@ export async function evaluateGame(gameId, evaluatedTeam, manualInputs = {}) {
   // Factor 2: Team Form
   const evalTPRRow = await fetchTPR(evaluatedTeam);
   const oppTPRRow = await fetchTPR(opponentTeam);
-  if (!evalTPRRow) warnings.push(`No TPR for ${evaluatedTeam} — defaulting to neutral`);
-  if (!oppTPRRow) warnings.push(`No TPR for ${opponentTeam} — defaulting to neutral`);
+  if (!evalTPRRow) warnings.push(`No TPR for ${evaluatedTeam} â defaulting to neutral`);
+  if (!oppTPRRow) warnings.push(`No TPR for ${opponentTeam} â defaulting to neutral`);
 
   const evalTPR = evalTPRRow ? Number(evalTPRRow.rating_value) : null;
   const oppTPR = oppTPRRow ? Number(oppTPRRow.rating_value) : null;
@@ -155,6 +155,8 @@ export async function evaluateGame(gameId, evaluatedTeam, manualInputs = {}) {
     recencyData = {
       evalLast10Wins: evalLast10.length > 0 ? countWins(evalLast10) : null,
       oppLast10Wins: oppLast10.length > 0 ? countWins(oppLast10) : null,
+      evalGamesIncluded: evalTPRRow.games_included !== null ? Number(evalTPRRow.games_included) : 0,
+      oppGamesIncluded: oppTPRRow.games_included !== null ? Number(oppTPRRow.games_included) : 0,
     };
   }
   const teamForm = scoreTeamForm(evalTPR, oppTPR, recencyData);
@@ -176,7 +178,7 @@ export async function evaluateGame(gameId, evaluatedTeam, manualInputs = {}) {
     else if (hoursBeforeGame < 3) timingCategory = 'close_to_gametime';
     else timingCategory = 'day_of';
   } else {
-    if (!openOdds) warnings.push('No opening odds snapshot — line movement defaulting to 0');
+    if (!openOdds) warnings.push('No opening odds snapshot â line movement defaulting to 0');
   }
   const lineMove = scoreLineMovement(movementPct, timingCategory);
 
@@ -193,7 +195,7 @@ export async function evaluateGame(gameId, evaluatedTeam, manualInputs = {}) {
   // Factor 7: Rest/Schedule (manual input)
   const rest = scoreRestSchedule(manualInputs.restInput || null);
 
-  // ── Step 5-6: Calculate adjustments and total ──
+  // ââ Step 5-6: Calculate adjustments and total ââ
   let totalAdjustment =
     pitcher.adjustment +
     teamForm.adjustment +
@@ -203,26 +205,26 @@ export async function evaluateGame(gameId, evaluatedTeam, manualInputs = {}) {
     weather.adjustment +
     rest.adjustment;
 
-  // ── Step 7: Cap total adjustment at ±15 ──
+  // ââ Step 7: Cap total adjustment at Â±15 ââ
   const uncappedTotal = totalAdjustment;
   totalAdjustment = Math.max(-TOTAL_ADJ_CAP, Math.min(TOTAL_ADJ_CAP, totalAdjustment));
 
-  // ── Step 8: Model probability ──
+  // ââ Step 8: Model probability ââ
   let modelProbability = marketProbability + (totalAdjustment / 100);
 
-  // ── Step 9: Cap model probability ──
+  // ââ Step 9: Cap model probability ââ
   modelProbability = Math.max(PROB_FLOOR, Math.min(PROB_CEILING, modelProbability));
 
-  // ── Step 10: Edge percentage ──
+  // ââ Step 10: Edge percentage ââ
   const edgePercentage = (modelProbability - marketProbability) * 100;
 
-  // ── Step 11: Pitcher gate ──
+  // ââ Step 11: Pitcher gate ââ
   const pitcherGatePassed = Math.abs(pitcher.score) >= PITCHER_GATE_THRESHOLD;
 
-  // ── Step 12: Decision rules ──
+  // ââ Step 12: Decision rules ââ
   const decision = applyDecisionRules(edgePercentage, pitcherGatePassed);
 
-  // ── Step 13: Write to model_scores table ──
+  // ââ Step 13: Write to model_scores table ââ
   const resultRow = {
     game_id: gameId,
     evaluated_team: evaluatedTeam,
@@ -251,7 +253,7 @@ export async function evaluateGame(gameId, evaluatedTeam, manualInputs = {}) {
 
   await insert('model_scores', resultRow);
 
-  // ── Step 14: Return full result ──
+  // ââ Step 14: Return full result ââ
   return {
     gameId,
     evaluatedTeam,
@@ -279,9 +281,9 @@ export async function evaluateGame(gameId, evaluatedTeam, manualInputs = {}) {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // TASK 10: evaluateAllGames
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 /**
  * @param {string} date - YYYY-MM-DD
@@ -331,9 +333,9 @@ export async function evaluateAllGames(date, bulkManualInputs = {}) {
   return { summary, results };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // UTILITIES
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 function round4(val) {
   return Math.round(val * 10000) / 10000;
