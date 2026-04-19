@@ -1,13 +1,13 @@
-// ═══════════════════════════════════════════════════════════════════════════════
-// SHARPLINE MODEL ENGINE — M4
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// SHARPLINE MODEL ENGINE â M4
 // 7-Factor Additive Adjustment Model (Walters Methodology)
-// All scoring functions are PURE — no DB calls, no side effects.
+// All scoring functions are PURE â no DB calls, no side effects.
 // The orchestrator (evaluateGame) handles all data fetching.
-// ═══════════════════════════════════════════════════════════════════════════════
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // CONSTANTS
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 export const FACTOR_MAX_ADJ = {
   pitcher:    4.80,
@@ -24,10 +24,10 @@ export const PROB_FLOOR = 0.05;   // 5%
 export const PROB_CEILING = 0.95; // 95%
 export const PITCHER_GATE_THRESHOLD = 2.0;
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // TASK 1: VIG REMOVAL
-// M1 Spec Section 2 — convert American odds to true market probability
-// ─────────────────────────────────────────────────────────────────────────────
+// M1 Spec Section 2 â convert American odds to true market probability
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 export function impliedProbability(americanOdds) {
   const odds = Number(americanOdds);
@@ -45,10 +45,10 @@ export function removeVig(homeOdds, awayOdds) {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // TASK 2: PITCHER ADVANTAGE SCORE
 // M1 Spec Section 3.1
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 // Linear interpolation between anchor points for pitcher component scoring
 // anchors: array of { value, score } sorted by value ascending
@@ -67,7 +67,7 @@ function interpolateScore(value, anchors) {
 }
 
 // ERA scoring: lower ERA = higher score
-// 10=ERA≤2.50, 7=ERA 3.00-3.50 (midpoint 3.25), 5=ERA 3.50-4.00 (3.75), 3=ERA 4.50-5.00 (4.75), 1=ERA≥5.50
+// 10=ERAâ¤2.50, 7=ERA 3.00-3.50 (midpoint 3.25), 5=ERA 3.50-4.00 (3.75), 3=ERA 4.50-5.00 (4.75), 1=ERAâ¥5.50
 function scoreERA(era) {
   if (era === null || era === undefined) return 5;
   return interpolateScore(era, [
@@ -82,7 +82,7 @@ function scoreERA(era) {
 }
 
 // WHIP scoring: lower WHIP = higher score
-// 10=WHIP≤0.95, 7=WHIP 1.10-1.20 (1.15), 5=WHIP 1.25-1.35 (1.30), 3=WHIP 1.45-1.55 (1.50), 1=WHIP≥1.70
+// 10=WHIPâ¤0.95, 7=WHIP 1.10-1.20 (1.15), 5=WHIP 1.25-1.35 (1.30), 3=WHIP 1.45-1.55 (1.50), 1=WHIPâ¥1.70
 function scoreWHIP(whip) {
   if (whip === null || whip === undefined) return 5;
   return interpolateScore(whip, [
@@ -97,7 +97,7 @@ function scoreWHIP(whip) {
 }
 
 // K/9 scoring: higher K/9 = higher score
-// 10=K/9≥11.0, 7=K/9 9.0-10.0 (9.5), 5=K/9 7.5-8.5 (8.0), 3=K/9 5.5-6.5 (6.0), 1=K/9≤4.0
+// 10=K/9â¥11.0, 7=K/9 9.0-10.0 (9.5), 5=K/9 7.5-8.5 (8.0), 3=K/9 5.5-6.5 (6.0), 1=K/9â¤4.0
 function scoreK9(k9) {
   if (k9 === null || k9 === undefined) return 5;
   return interpolateScore(k9, [
@@ -148,7 +148,7 @@ function scoreHomeAwaySplit(venueERA, overallERA) {
     return 5; // neutral
   }
   const diff = overallERA - venueERA; // positive = better at this venue
-  // Scale: if better by 1+ ERA at venue → 10, if worse by 1+ → 1
+  // Scale: if better by 1+ ERA at venue â 10, if worse by 1+ â 1
   // Linear from 1 to 10 across -1.0 to +1.0 ERA diff
   const normalized = Math.max(-1, Math.min(1, diff));
   return 5.5 + normalized * 4.5; // range: 1 to 10
@@ -162,7 +162,7 @@ function scoreHomeAwaySplit(venueERA, overallERA) {
  * @returns {number} PQS on 1-10 scale
  */
 export function pitcherQualityScore(seasonStats, recentStarts, venueType) {
-  if (!seasonStats) return 5.0; // missing pitcher → neutral
+  if (!seasonStats) return 5.0; // missing pitcher â neutral
 
   const era = seasonStats.era !== null ? Number(seasonStats.era) : null;
   const whip = seasonStats.whip !== null ? Number(seasonStats.whip) : null;
@@ -206,10 +206,10 @@ export function scorePitcherAdvantage(evalPQS, oppPQS) {
   return { score: round4(score), adjustment: round4(adjustment) };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // TASK 3: TEAM FORM SCORE
 // M1 Spec Section 3.2
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 /**
  * @param {number} evalTPR - evaluated team's current TPR (1-100)
@@ -227,24 +227,36 @@ export function scoreTeamForm(evalTPR, oppTPR, recencyData = null) {
   let score = ((evalTPR - oppTPR) / MAX_TPR_DIFF) * 10;
   score = clamp(score, -10, 10);
 
-  // Recency modifier: dampening factor 0.8 if recent performance diverges from TPR
+  // Recency modifier: dampening factor 0.8 if recent performance diverges from TPR.
+  // Guard: only apply when both teams have >= 10 games included (meaningful trend data).
+  // Dampening applies AT MOST ONCE per evaluation — if ANY divergence condition is met.
   if (recencyData) {
-    const { evalLast10Wins, oppLast10Wins } = recencyData;
-    // Evaluated team: high TPR but losing (3-7 or worse in last 10 with TPR > 60)
-    if (evalTPR > 60 && evalLast10Wins !== null && evalLast10Wins <= 3) {
-      score *= 0.8;
-    }
-    // Evaluated team: low TPR but winning (7-3 or better in last 10 with TPR < 40)
-    if (evalTPR < 40 && evalLast10Wins !== null && evalLast10Wins >= 7) {
-      score *= 0.8;
-    }
-    // Opponent: high TPR but losing
-    if (oppTPR > 60 && oppLast10Wins !== null && oppLast10Wins <= 3) {
-      score *= 0.8;
-    }
-    // Opponent: low TPR but winning
-    if (oppTPR < 40 && oppLast10Wins !== null && oppLast10Wins >= 7) {
-      score *= 0.8;
+    const { evalLast10Wins, oppLast10Wins, evalGamesIncluded, oppGamesIncluded } = recencyData;
+
+    // Skip dampening entirely if either team lacks sufficient game data
+    if (evalGamesIncluded >= 10 && oppGamesIncluded >= 10) {
+      let shouldDampen = false;
+
+      // Evaluated team: high TPR but losing (3-7 or worse in last 10 with TPR > 60)
+      if (evalTPR > 60 && evalLast10Wins !== null && evalLast10Wins <= 3) {
+        shouldDampen = true;
+      }
+      // Evaluated team: low TPR but winning (7-3 or better in last 10 with TPR < 40)
+      if (evalTPR < 40 && evalLast10Wins !== null && evalLast10Wins >= 7) {
+        shouldDampen = true;
+      }
+      // Opponent: high TPR but losing
+      if (oppTPR > 60 && oppLast10Wins !== null && oppLast10Wins <= 3) {
+        shouldDampen = true;
+      }
+      // Opponent: low TPR but winning
+      if (oppTPR < 40 && oppLast10Wins !== null && oppLast10Wins >= 7) {
+        shouldDampen = true;
+      }
+
+      if (shouldDampen) {
+        score *= 0.8;
+      }
     }
   }
 
@@ -253,10 +265,10 @@ export function scoreTeamForm(evalTPR, oppTPR, recencyData = null) {
   return { score: round4(score), adjustment: round4(adjustment) };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // TASK 4: LINE MOVEMENT SCORE
 // M1 Spec Section 3.3
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 /**
  * @param {number} movementPct - current implied prob - opening implied prob (in percentage points, e.g. +3.5 means +3.5%)
@@ -292,10 +304,10 @@ export function scoreLineMovement(movementPct, timingCategory = 'day_of') {
   return { score: round4(score), adjustment: round4(adjustment) };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // TASK 5: PUBLIC SPLITS SCORE
 // M1 Spec Section 3.4
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 /**
  * @param {number} publicBetPct - % of public bets on the EVALUATED team (0-100). Default 50.
@@ -322,8 +334,8 @@ export function scorePublicSplits(publicBetPct = 50, lineMovementScore = null) {
   if (lineMovementScore !== null) {
     // Line moving AGAINST public money = line moving toward evaluated team while public is on opponent
     // If contrarianGap > 0 (public on opponent) and line is moving toward eval team (positive lineMovementScore)
-    // → confirmed sharp signal → ×1.3
-    // If moving WITH public → ×0.7
+    // â confirmed sharp signal â Ã1.3
+    // If moving WITH public â Ã0.7
     const publicOnOpponent = contrarianGap > 10;
     const publicOnEval = contrarianGap < -10;
     const lineTowardEval = lineMovementScore > 0;
@@ -343,10 +355,10 @@ export function scorePublicSplits(publicBetPct = 50, lineMovementScore = null) {
   return { score: round4(score), adjustment: round4(adjustment) };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // TASK 6: INJURY IMPACT SCORE
 // M1 Spec Section 4.1
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 const INJURY_VALUES = {
   star:     3.5,
@@ -379,10 +391,10 @@ export function scoreInjuryImpact(injuryInputs = null) {
   return { score: round4(score), adjustment: round4(adjustment) };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // TASK 7: WEATHER SCORE
 // M1 Spec Section 4.2
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 /**
  * @param {object} weatherInput - { venue_type: 'outdoor'|'dome', wind_speed, wind_direction: 'out'|'in'|'crosswind', temp_f, precip_pct }
@@ -401,12 +413,12 @@ export function scoreWeather(weatherInput = null, evalPitcherScore = 5, oppPitch
   const windSpeed = weatherInput.wind_speed || 0;
   if (windSpeed > 10) {
     if (weatherInput.wind_direction === 'out') {
-      // Increases run scoring — favors better offense / worse pitching matchup
+      // Increases run scoring â favors better offense / worse pitching matchup
       // If we have better pitching, wind blowing out is slightly negative for us
       score += hasBetterPitching ? -2 : 2;
       if (windSpeed > 15) score += hasBetterPitching ? -1 : 1;
     } else if (weatherInput.wind_direction === 'in') {
-      // Decreases run scoring — favors better pitching matchup
+      // Decreases run scoring â favors better pitching matchup
       score += hasBetterPitching ? 3 : -3;
       if (windSpeed > 15) score += hasBetterPitching ? 1 : -1;
     }
@@ -432,10 +444,10 @@ export function scoreWeather(weatherInput = null, evalPitcherScore = 5, oppPitch
   return { score: round4(score), adjustment: round4(adjustment) };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // TASK 8: REST/SCHEDULE SCORE
 // M1 Spec Section 4.3
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 /**
  * @param {object} restInput - { evaluatedTeamDaysOff, opponentDaysOff, evaluatedTeamDoubleheader, opponentDoubleheader, evaluatedTeamCrossCountry, opponentCrossCountry }
@@ -451,7 +463,7 @@ export function scoreRestSchedule(restInput = null) {
   const oppDaysOff = restInput.opponentDaysOff ?? null;
 
   if (oppDaysOff !== null && oppDaysOff === 0) {
-    // Opponent has not had a day off — on consecutive game stretch
+    // Opponent has not had a day off â on consecutive game stretch
     if (evalDaysOff !== null && evalDaysOff >= 1) {
       score += 6; // opponent fatigued, eval team rested (+5 to +8 range)
     }
@@ -475,10 +487,10 @@ export function scoreRestSchedule(restInput = null) {
   return { score: round4(score), adjustment: round4(adjustment) };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // DECISION RULES
 // M1 Spec Section 7
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 /**
  * @param {number} edgePct - edge percentage (e.g. 4.98)
@@ -498,9 +510,9 @@ export function applyDecisionRules(edgePct, pitcherGatePassed) {
   return 'pass';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // UTILITY HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
+// âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 function clamp(val, min, max) {
   return Math.max(min, Math.min(max, val));
