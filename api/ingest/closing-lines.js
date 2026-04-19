@@ -3,8 +3,10 @@
 //         captures last odds as closing snapshot, updates games.status to in_progress
 // Designed to run every 10 minutes on game days
 // Includes late-closing-line recovery for missed captures
+// M5 HOOK: After capturing a closing line, automatically calculates CLV for any bets on that game
 
 import { select, insert, update, removeVig } from '../_lib/supabase.js';
+import { calculateCLVForGame } from '../bets/calculate-clv.js';
 
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
 
@@ -74,7 +76,7 @@ export async function captureClosingLines() {
   const apiKey = process.env.ODDS_API_KEY;
   if (!apiKey) throw new Error('ODDS_API_KEY not configured');
 
-  const log = { captured: 0, skipped: 0, lateCaptures: 0, errors: [] };
+  const log = { captured: 0, skipped: 0, lateCaptures: 0, clvCalculated: 0, errors: [] };
   const today = new Date().toISOString().split('T')[0];
 
   // 1. Get all scheduled games for today
@@ -194,6 +196,20 @@ export async function captureClosingLines() {
       }
     }
 
+    // 7. M5 HOOK — Automatically calculate CLV for any bets on this game
+    try {
+      const clvResult = await calculateCLVForGame(game.id);
+      log.clvCalculated += clvResult.calculated;
+      if (clvResult.errors.length) {
+        log.errors.push(...clvResult.errors.map(e => `CLV: ${e}`));
+      }
+      if (clvResult.calculated > 0) {
+        console.log(`[CLOSING] CLV calculated for ${clvResult.calculated} bet(s) on ${game.away_team} @ ${game.home_team}`);
+      }
+    } catch (err) {
+      log.errors.push(`CLV auto-calculation failed for game ${game.id}: ${err.message}`);
+    }
+
     if (isLate) {
       log.lateCaptures++;
       console.log(`[CLOSING] LATE capture: ${game.away_team} @ ${game.home_team} — source: ${source}`);
@@ -227,6 +243,7 @@ export default async function handler(req, res) {
     summary.skipped = result.skipped;
     summary.errors = result.errors;
     summary.lateCaptures = result.lateCaptures;
+    summary.clvCalculated = result.clvCalculated;
     summary.success = result.errors.length === 0 || result.captured > 0;
   } catch (err) {
     summary.success = false;
