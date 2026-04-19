@@ -3,7 +3,7 @@
 // that don't yet have an 'open' snapshot in odds_snapshots
 // Typically run once per game (evening before or morning of)
 
-import { select, insert, removeVig } from '../lib/supabase.js';
+import { select, insert, removeVig } from '../_lib/supabase.js';
 
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
 

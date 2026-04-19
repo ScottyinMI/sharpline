@@ -4,7 +4,7 @@
 // Designed to run every 10 minutes on game days
 // Includes late-closing-line recovery for missed captures
 
-import { select, insert, update, removeVig } from '../lib/supabase.js';
+import { select, insert, update, removeVig } from '../_lib/supabase.js';
 
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
 

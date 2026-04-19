@@ -3,7 +3,7 @@
 // Task 3: syncPitcherRecentForm(pitcherId) — per-start game log
 // syncAllActivePitchers(season) — iterates all starters with games_started > 0
 
-import { upsert } from '../lib/supabase.js';
+import { upsert } from '../_lib/supabase.js';
 
 const MLB_API_BASE = 'https://statsapi.mlb.com/api/v1';
 

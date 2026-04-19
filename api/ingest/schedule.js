@@ -3,8 +3,8 @@
 // Upserts games table with mlb_game_pk, team abbreviations, probable pitchers
 // Then matches Odds API game IDs by fetching that date's MLB events
 
-import { upsert, select, update } from '../lib/supabase.js';
-import { normalizeTeam, teamsMatch, ODDS_API_TEAM_MAP } from '../lib/teamMap.js';
+import { upsert, select, update } from '../_lib/supabase.js';
+import { normalizeTeam, teamsMatch, ODDS_API_TEAM_MAP } from '../_lib/teamMap.js';
 
 const MLB_API_BASE = 'https://statsapi.mlb.com/api/v1';
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';

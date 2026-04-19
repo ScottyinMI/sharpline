@@ -4,7 +4,7 @@
 // IDEMPOTENCY RULE: only inserts if no rating exists for that team_id on that date
 // (This is append-only — never overwrites existing ratings)
 
-import { select, insert } from '../lib/supabase.js';
+import { select, insert } from '../_lib/supabase.js';
 
 // Default seed data (Governance-provided values, 2026 preseason)
 const DEFAULT_SEED = [

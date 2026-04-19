@@ -3,7 +3,7 @@
 //         applies 90/10 Walters formula, appends new TPR rows
 // processAllFinalizedGames() — runs for all games showing Final in Odds API
 
-import { select, insert, update } from '../lib/supabase.js';
+import { select, insert, update } from '../_lib/supabase.js';
 
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
 

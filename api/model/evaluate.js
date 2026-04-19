@@ -2,7 +2,7 @@
 // M4 Task 10: Manual trigger endpoint for model evaluation
 // Evaluates both teams for all scheduled games on a given date
 
-import { evaluateGame, evaluateAllGames } from '../lib/evaluateGame.js';
+import { evaluateGame, evaluateAllGames } from '../_lib/evaluateGame.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
