@@ -6,7 +6,7 @@
 // M5 HOOK: After capturing a closing line, automatically calculates CLV for any bets on that game
 
 import { select, insert, update, removeVig } from '../_lib/supabase.js';
-import { calculateCLVForGame } from '../bets/calculate-clv.js';
+import { calculateCLVForGame } from '../bets/[action].js';
 
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
 
