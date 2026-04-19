@@ -2,8 +2,8 @@
 // Catch-all route to stay within Vercel Hobby function limit
 // Routes: calculate-clv (POST), record-results (POST), performance (GET)
 
-import { select, insert, update } from '../../_lib/supabase.js';
-import { impliedProbability, removeVig } from '../../_lib/model.js';
+import { select, insert, update } from '../_lib/supabase.js';
+import { impliedProbability, removeVig } from '../_lib/model.js';
 
 // ─── American → Decimal odds conversion ──────────────────────────────────────
 
